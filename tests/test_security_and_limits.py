@@ -2,7 +2,7 @@
 
 Encodes the documented guarantees:
 - Zero-knowledge: AES key NEVER reaches or persists in the backend.
-- Free tier individual file limit = 150 MB (docs/PRD.md NFR table).
+- Per-file ceiling = 50 MB (`MAX_INDIVIDUAL_FILE_SIZE`, docs/PRD.md section 7).
 - Default transfer session lifetime = 10 min, extendable to 30 min.
 - CORS restricted to explicit allowed origins (no wildcard + credentials).
 """

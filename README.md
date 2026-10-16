@@ -33,6 +33,11 @@ The service coordinates the transfer of files by generating short-lived, presign
 * **`GET /transfers/{transfer_id}`**: Retrieves transfer metadata (file list, sizes, status, and time-to-live).
 * **`POST /transfers/{transfer_id}/downloads`**: Generates presigned download URLs for the files.
 * **`DELETE /transfers/{transfer_id}`**: Cancels the transfer and removes files from storage immediately.
+* **`POST /transfers/{transfer_id}/extend`**: Extends the session TTL to 30 minutes. It does not check that an ad was watched.
+* **`GET /transfers/{transfer_id}/turn-credentials`**: Short-lived HMAC TURN credentials. Returns `enabled: false` when TURN is not configured. Does not check that the transfer exists.
+
+### Signaling
+* **`WS /ws/signaling/{session_id}`**: In-memory two-peer relay for SDP and ICE. Requires a single Uvicorn worker. Session validation is off unless `set_session_validator` is registered; `main.py` does not register it.
 
 ### Receiver Sessions (`/api/v1/receiver-sessions`)
 * **`POST /receiver-sessions`**: Creates a temporary receiver session (status `"waiting"`) and returns a session ID.
@@ -92,11 +97,11 @@ R2_BUCKET_NAME=your-bucket-name
   ```
   Explore the interactive API docs at **`http://localhost:8000/docs`**.
 
-* **Run the Unit Test Suite**:
+* **Run the test suite**:
   ```bash
   .venv\Scripts\python -m pytest
   ```
-  Runs the full suite of 17 tests testing limits, endpoints, completion status, and session allocations.
+  Tests live in `backend/tests` (transfers, receiver sessions, signaling, TURN, limits). Do not treat an old "17 tests" or "47 tests" note as the current count.
 
 ---
 
@@ -105,4 +110,4 @@ R2_BUCKET_NAME=your-bucket-name
 When deploying to environments like **Oracle Cloud (OCI)**:
 1. **Network Configuration**: Ensure an Ingress Security Rule is added in your OCI console to permit TCP traffic on the port your API is exposed (default `8000`), and save local OS firewall rules (`iptables` / `firewalld`).
 2. **Process Management**: Run the app as a background service using **systemd** (`systemctl`) or containerize it via **Docker** to ensure persistent operation and crash recovery.
-3. **SSL Reverse Proxy**: Use **Caddy** or **Nginx** in front of the Uvicorn server to automatically provision and manage Let's Encrypt SSL certificates.
+3. **TLS**: Cloudflare terminates TLS (orange-cloud proxy, origin rule from port 80 to 8000). The OCI process stays HTTP. Use Caddy or nginx with Let's Encrypt only if the Cloudflare proxy is not in front of the origin.
