@@ -20,7 +20,7 @@ def get_receiver_service() -> ReceiverService:
     "",
     response_model=ReceiverSessionCreateResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RateLimiter(limit=5, window_seconds=60))],
+    dependencies=[Depends(RateLimiter(limit=5, window_seconds=60, bucket="receiver-session-create"))],
 )
 async def create_receiver_session(service: ReceiverService = Depends(get_receiver_service)):
     return await service.create_receiver_session()

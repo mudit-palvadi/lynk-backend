@@ -27,7 +27,7 @@ def get_transfer_service() -> TransferService:
     "",
     response_model=TransferCreateResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(RateLimiter(limit=5, window_seconds=60))],
+    dependencies=[Depends(RateLimiter(limit=5, window_seconds=60, bucket="transfer-create"))],
 )
 async def create_transfer(
     payload: TransferCreate, service: TransferService = Depends(get_transfer_service)
@@ -60,7 +60,7 @@ async def get_download_urls(
 @router.post(
     "/{transfer_id}/extend",
     response_model=TransferExtendResponse,
-    dependencies=[Depends(RateLimiter(limit=5, window_seconds=60))],
+    dependencies=[Depends(RateLimiter(limit=5, window_seconds=60, bucket="transfer-extend"))],
 )
 async def extend_transfer(
     transfer_id: str, service: TransferService = Depends(get_transfer_service)
@@ -77,7 +77,7 @@ async def cancel_transfer(
 
 @router.get(
     "/{transfer_id}/turn-credentials",
-    dependencies=[Depends(RateLimiter(limit=10, window_seconds=60))],
+    dependencies=[Depends(RateLimiter(limit=10, window_seconds=60, bucket="transfer-turn-credentials"))],
 )
 async def get_turn_credentials(transfer_id: str):
     """Short-lived TURN relay credentials for the P2P ICE ladder.
