@@ -89,11 +89,15 @@ async def test_bc1_cloud_happy_path_creates_and_downloads(fake_redis, monkeypatc
     tid = created["transfer_id"]
 
     for f in created["files"]:
-        result = await svc.complete_file(transfer_id=tid, file_id=f["file_id"])
+        result = await svc.complete_file(
+            transfer_id=tid, file_id=f["file_id"], sender_secret=created["sender_secret"]
+        )
         assert result["status"] == "uploaded"
-    meta = await svc.get_transfer_metadata(tid)
+    meta = await svc.get_transfer_metadata(tid, access_token=created["access_token"])
     assert meta["transfer_id"] == tid
-    urls = await svc.get_download_urls(transfer_id=tid)
+    assert "sender_secret" not in meta
+    assert "access_token" not in meta
+    urls = await svc.get_download_urls(transfer_id=tid, access_token=created["access_token"])
     assert len(urls["files"]) == 2
     assert urls["files"][0]["download_url"].startswith("https://r2.mock/download")
 
@@ -158,16 +162,16 @@ async def test_bc3_cloud_lifecycle_extend_and_cancel(fake_redis, monkeypatch):
     tid = created["transfer_id"]
 
     # Extend bumps TTL toward 1800
-    extended = await svc.extend_transfer(tid)
+    extended = await svc.extend_transfer(tid, sender_secret=created["sender_secret"])
     assert extended["expires_in"] == 1800
 
-    await svc.cancel_transfer(tid)
+    await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
     from app.core.exceptions import TransferNotFoundException
 
     with pytest.raises(TransferNotFoundException):
-        await svc.get_transfer_metadata(tid)
+        await svc.get_transfer_metadata(tid, access_token=created["access_token"])
     with pytest.raises(TransferNotFoundException):
-        await svc.extend_transfer(tid)
+        await svc.extend_transfer(tid, sender_secret=created["sender_secret"])
 
 
 @pytest.mark.anyio

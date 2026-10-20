@@ -220,13 +220,18 @@ def test_extend_transfer_returns_extended_expiry(mock_env):
         "expires_at": "2026-07-15T00:10:00Z",
         "total_files": 1,
         "total_size": 100,
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
         "files": [],
     }
     mock_env["redis"].get_transfer = AsyncMock(return_value=transfer_data)
     mock_env["redis"].extend_transfer = AsyncMock()
     mock_env["redis"].get_client = AsyncMock(return_value=AsyncMock())
 
-    response = client.post("/api/v1/transfers/tx_123/extend")
+    response = client.post(
+        "/api/v1/transfers/tx_123/extend",
+        headers={"X-Lynk-Sender-Secret": "sender-secret"},
+    )
     assert response.status_code == 200
 
     data = response.json()
@@ -267,6 +272,21 @@ def test_cors_wildcard_origin_is_not_used():
     response = _preflight("https://some-random-site.org")
     acao = response.headers.get("access-control-allow-origin")
     assert acao != "*"
+
+
+def test_cors_allows_capability_headers():
+    allowed = settings.ALLOWED_ORIGINS[0]
+    response = client.options(
+        "/api/v1/transfers",
+        headers={
+            "Origin": allowed,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-lynk-access-token,x-lynk-sender-secret",
+        },
+    )
+    allowed_headers = response.headers.get("access-control-allow-headers", "").lower()
+    assert "x-lynk-access-token" in allowed_headers
+    assert "x-lynk-sender-secret" in allowed_headers
 
 
 def test_cors_allowed_origin_is_echoed():

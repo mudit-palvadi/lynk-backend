@@ -16,4 +16,8 @@ class TransferModel(BaseModel):
     expires_at: str
     total_files: int
     total_size: int
+    # Present only on records created after the capability split. Empty means
+    # the record cannot authorize metadata, download, cancel, extend, or complete.
+    sender_secret: str = ""
+    access_token: str = ""
     files: list[FileItemModel] = Field(default_factory=list)

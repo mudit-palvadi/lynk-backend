@@ -7,7 +7,9 @@ from app.core.exceptions import (
     TransferNotFoundException,
     TransferNotReadyException,
     InvalidInputException,
+    UnauthorizedException,
 )
+from app.core.security import secrets_match
 from app.models.transfer import TransferModel, FileItemModel
 from app.services.redis_service import RedisService
 from app.services.r2_service import R2Service
@@ -20,6 +22,10 @@ class TransferService:
 
     def _generate_id(self, length: int) -> str:
         return secrets.token_urlsafe(length)[:length]
+
+    def _require_secret(self, presented: str | None, expected: str) -> None:
+        if not secrets_match(presented, expected):
+            raise UnauthorizedException()
 
     async def create_transfer(self, files_input: list[dict]) -> dict:
         if len(files_input) > settings.MAX_FILES_PER_TRANSFER:
@@ -75,6 +81,8 @@ class TransferService:
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=settings.TRANSFER_LIFETIME_SECONDS)
+        sender_secret = secrets.token_urlsafe(32)
+        access_token = secrets.token_urlsafe(32)
 
         transfer = TransferModel(
             transfer_id=transfer_id,
@@ -83,6 +91,8 @@ class TransferService:
             expires_at=expires_at.isoformat(),
             total_files=len(file_models),
             total_size=total_size,
+            sender_secret=sender_secret,
+            access_token=access_token,
             files=file_models,
         )
 
@@ -116,14 +126,19 @@ class TransferService:
             "total_size": total_size,
             "expires_in": settings.TRANSFER_LIFETIME_SECONDS,
             "files": upload_files,
+            "sender_secret": sender_secret,
+            "access_token": access_token,
         }
 
-    async def complete_file(self, transfer_id: str, file_id: str) -> dict:
+    async def complete_file(
+        self, transfer_id: str, file_id: str, *, sender_secret: str | None
+    ) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
             raise TransferNotFoundException()
 
         transfer = TransferModel.model_validate(data)
+        self._require_secret(sender_secret, transfer.sender_secret)
         target_file = next((f for f in transfer.files if f.file_id == file_id), None)
         if not target_file:
             raise InvalidInputException("File not found in transfer")
@@ -153,12 +168,13 @@ class TransferService:
             "transfer_status": transfer.status,
         }
 
-    async def get_transfer_metadata(self, transfer_id: str) -> dict:
+    async def get_transfer_metadata(self, transfer_id: str, *, access_token: str | None) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
             raise TransferNotFoundException()
 
         transfer = TransferModel.model_validate(data)
+        self._require_secret(access_token, transfer.access_token)
 
         client = await self.redis.get_client()
         key = self.redis._get_key(transfer_id)
@@ -182,12 +198,13 @@ class TransferService:
             ],
         }
 
-    async def extend_transfer(self, transfer_id: str) -> dict:
+    async def extend_transfer(self, transfer_id: str, *, sender_secret: str | None) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
             raise TransferNotFoundException()
 
         transfer = TransferModel.model_validate(data)
+        self._require_secret(sender_secret, transfer.sender_secret)
 
         now = datetime.now(timezone.utc)
         new_expires_at = now + timedelta(seconds=settings.EXTENDED_TRANSFER_LIFETIME_SECONDS)
@@ -209,12 +226,19 @@ class TransferService:
             "expires_in": settings.EXTENDED_TRANSFER_LIFETIME_SECONDS,
         }
 
-    async def get_download_urls(self, transfer_id: str, file_ids: list[str] | None = None) -> dict:
+    async def get_download_urls(
+        self,
+        transfer_id: str,
+        file_ids: list[str] | None = None,
+        *,
+        access_token: str | None,
+    ) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
             raise TransferNotFoundException()
 
         transfer = TransferModel.model_validate(data)
+        self._require_secret(access_token, transfer.access_token)
         if transfer.status != "ready":
             raise TransferNotReadyException()
 
@@ -237,12 +261,13 @@ class TransferService:
 
         return {"files": download_files}
 
-    async def cancel_transfer(self, transfer_id: str) -> None:
+    async def cancel_transfer(self, transfer_id: str, *, sender_secret: str | None) -> None:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
             return
 
         transfer = TransferModel.model_validate(data)
+        self._require_secret(sender_secret, transfer.sender_secret)
         await self.redis.delete_transfer(transfer_id)
 
         client = await self.redis.get_client()

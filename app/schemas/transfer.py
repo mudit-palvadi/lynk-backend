@@ -25,6 +25,10 @@ class TransferCreateResponse(BaseModel):
     total_size: int
     expires_in: int
     files: list[FileUploadResponse]
+    # Returned once, at create. The sender secret never goes in the share link.
+    sender_secret: str
+    # Returned once, at create, and carried in the link fragment for receivers.
+    access_token: str
 
 
 class FileMetadata(BaseModel):

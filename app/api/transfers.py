@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, status
 from app.schemas.transfer import (
     TransferCreate,
     TransferCreateResponse,
@@ -38,14 +38,23 @@ async def create_transfer(
 
 @router.post("/{transfer_id}/files/{file_id}/complete", response_model=FileCompleteResponse)
 async def complete_file(
-    transfer_id: str, file_id: str, service: TransferService = Depends(get_transfer_service)
+    transfer_id: str,
+    file_id: str,
+    service: TransferService = Depends(get_transfer_service),
+    x_lynk_sender_secret: str | None = Header(default=None),
 ):
-    return await service.complete_file(transfer_id, file_id)
+    return await service.complete_file(
+        transfer_id, file_id, sender_secret=x_lynk_sender_secret
+    )
 
 
 @router.get("/{transfer_id}", response_model=TransferMetadataResponse)
-async def get_transfer(transfer_id: str, service: TransferService = Depends(get_transfer_service)):
-    return await service.get_transfer_metadata(transfer_id)
+async def get_transfer(
+    transfer_id: str,
+    service: TransferService = Depends(get_transfer_service),
+    x_lynk_access_token: str | None = Header(default=None),
+):
+    return await service.get_transfer_metadata(transfer_id, access_token=x_lynk_access_token)
 
 
 @router.post("/{transfer_id}/downloads", response_model=TransferDownloadResponse)
@@ -53,8 +62,11 @@ async def get_download_urls(
     transfer_id: str,
     payload: FileDownloadRequest,
     service: TransferService = Depends(get_transfer_service),
+    x_lynk_access_token: str | None = Header(default=None),
 ):
-    return await service.get_download_urls(transfer_id, payload.file_ids)
+    return await service.get_download_urls(
+        transfer_id, payload.file_ids, access_token=x_lynk_access_token
+    )
 
 
 @router.post(
@@ -63,16 +75,20 @@ async def get_download_urls(
     dependencies=[Depends(RateLimiter(limit=5, window_seconds=60, bucket="transfer-extend"))],
 )
 async def extend_transfer(
-    transfer_id: str, service: TransferService = Depends(get_transfer_service)
+    transfer_id: str,
+    service: TransferService = Depends(get_transfer_service),
+    x_lynk_sender_secret: str | None = Header(default=None),
 ):
-    return await service.extend_transfer(transfer_id)
+    return await service.extend_transfer(transfer_id, sender_secret=x_lynk_sender_secret)
 
 
 @router.delete("/{transfer_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_transfer(
-    transfer_id: str, service: TransferService = Depends(get_transfer_service)
+    transfer_id: str,
+    service: TransferService = Depends(get_transfer_service),
+    x_lynk_sender_secret: str | None = Header(default=None),
 ):
-    await service.cancel_transfer(transfer_id)
+    await service.cancel_transfer(transfer_id, sender_secret=x_lynk_sender_secret)
 
 
 @router.get(

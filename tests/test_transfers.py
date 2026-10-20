@@ -55,6 +55,12 @@ def test_create_transfer_success():
     assert data["status"] == "uploading"
     assert len(data["files"]) == 2
     assert data["files"][0]["upload_url"] == "https://r2.mock/upload"
+    assert data["sender_secret"]
+    assert data["access_token"]
+    assert data["sender_secret"] != data["access_token"]
+    stored = mock_redis.set_transfer.call_args.args[1]
+    assert stored["sender_secret"] == data["sender_secret"]
+    assert stored["access_token"] == data["access_token"]
     mock_redis.set_transfer.assert_called_once()
     mock_r2.generate_upload_url.assert_any_call(ANY, ANY, "image/jpeg", 1024 * 1024 * 10)
 
@@ -155,6 +161,8 @@ def test_create_transfer_limit_exceeded_total_size():
 def test_complete_file_success():
     transfer_data = {
         "transfer_id": "tx_123",
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
         "status": "uploading",
         "created_at": "2026-07-15T00:00:00Z",
         "expires_at": "2026-07-15T00:30:00Z",
@@ -181,7 +189,10 @@ def test_complete_file_success():
     mock_r2.verify_file_exists = AsyncMock(return_value=50)
     mock_redis.update_transfer = AsyncMock()
 
-    response = client.post("/api/v1/transfers/tx_123/files/fid_1/complete")
+    response = client.post(
+        "/api/v1/transfers/tx_123/files/fid_1/complete",
+        headers={"X-Lynk-Sender-Secret": "sender-secret"},
+    )
     assert response.status_code == 200
 
     data = response.json()
@@ -213,6 +224,8 @@ def test_create_transfer_rejects_non_positive_file_size():
 def test_complete_file_rejects_size_mismatch():
     transfer_data = {
         "transfer_id": "tx_123",
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
         "status": "uploading",
         "created_at": "2026-07-15T00:00:00Z",
         "expires_at": "2026-07-15T00:30:00Z",
@@ -233,7 +246,10 @@ def test_complete_file_rejects_size_mismatch():
     mock_r2.delete_objects = AsyncMock()
     mock_redis.update_transfer = AsyncMock()
 
-    response = client.post("/api/v1/transfers/tx_123/files/fid_1/complete")
+    response = client.post(
+        "/api/v1/transfers/tx_123/files/fid_1/complete",
+        headers={"X-Lynk-Sender-Secret": "sender-secret"},
+    )
     assert response.status_code == 400
     assert "does not match" in response.json()["detail"]
     mock_redis.update_transfer.assert_not_called()
@@ -249,6 +265,8 @@ def test_complete_file_not_found():
 def test_get_metadata_success():
     transfer_data = {
         "transfer_id": "tx_123",
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
         "status": "ready",
         "created_at": "2026-07-15T00:00:00Z",
         "expires_at": "2026-07-15T00:30:00Z",
@@ -270,7 +288,10 @@ def test_get_metadata_success():
     mock_client.ttl = AsyncMock(side_effect=lambda key: 1200)
     mock_redis.get_client = AsyncMock(return_value=mock_client)
 
-    response = client.get("/api/v1/transfers/tx_123")
+    response = client.get(
+        "/api/v1/transfers/tx_123",
+        headers={"X-Lynk-Access-Token": "access-token"},
+    )
     assert response.status_code == 200
 
     data = response.json()
@@ -279,11 +300,15 @@ def test_get_metadata_success():
     assert data["expires_in"] == 1200
     assert len(data["files"]) == 1
     assert data["files"][0]["file_id"] == "fid_1"
+    assert "sender_secret" not in data
+    assert "access_token" not in data
 
 
 def test_get_download_urls_not_ready():
     transfer_data = {
         "transfer_id": "tx_123",
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
         "status": "uploading",
         "created_at": "2026-07-15T00:00:00Z",
         "expires_at": "2026-07-15T00:30:00Z",
@@ -301,13 +326,19 @@ def test_get_download_urls_not_ready():
     }
     mock_redis.get_transfer = AsyncMock(return_value=transfer_data)
 
-    response = client.post("/api/v1/transfers/tx_123/downloads", json={})
+    response = client.post(
+        "/api/v1/transfers/tx_123/downloads",
+        json={},
+        headers={"X-Lynk-Access-Token": "access-token"},
+    )
     assert response.status_code == 409
 
 
 def test_get_download_urls_success():
     transfer_data = {
         "transfer_id": "tx_123",
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
         "status": "ready",
         "created_at": "2026-07-15T00:00:00Z",
         "expires_at": "2026-07-15T00:30:00Z",
@@ -326,7 +357,11 @@ def test_get_download_urls_success():
     mock_redis.get_transfer = AsyncMock(return_value=transfer_data)
     mock_r2.generate_download_url = AsyncMock(return_value="https://r2.mock/download")
 
-    response = client.post("/api/v1/transfers/tx_123/downloads", json={})
+    response = client.post(
+        "/api/v1/transfers/tx_123/downloads",
+        json={},
+        headers={"X-Lynk-Access-Token": "access-token"},
+    )
     assert response.status_code == 200
 
     data = response.json()
@@ -338,6 +373,8 @@ def test_get_download_urls_success():
 def test_cancel_transfer():
     transfer_data = {
         "transfer_id": "tx_123",
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
         "status": "ready",
         "created_at": "2026-07-15T00:00:00Z",
         "expires_at": "2026-07-15T00:30:00Z",
@@ -357,7 +394,10 @@ def test_cancel_transfer():
     mock_redis.delete_transfer = AsyncMock()
     mock_r2.delete_objects = AsyncMock()
 
-    response = client.delete("/api/v1/transfers/tx_123")
+    response = client.delete(
+        "/api/v1/transfers/tx_123",
+        headers={"X-Lynk-Sender-Secret": "sender-secret"},
+    )
     assert response.status_code == 204
     mock_redis.delete_transfer.assert_called_once_with("tx_123")
     mock_r2.delete_objects.assert_called_once_with("tx_123", ["fid_1"])
@@ -388,3 +428,83 @@ def test_create_transfer_rate_limiting():
     response = client.post("/api/v1/transfers", json=payload)
     assert response.status_code == 429
     assert "Rate limit exceeded" in response.json()["detail"]
+
+
+def _ready_transfer() -> dict:
+    return {
+        "transfer_id": "tx_123",
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
+        "status": "ready",
+        "created_at": "2026-07-15T00:00:00Z",
+        "expires_at": "2026-07-15T00:30:00Z",
+        "total_files": 1,
+        "total_size": 100,
+        "files": [
+            {
+                "file_id": "fid_1",
+                "file_name": "a.txt",
+                "file_size": 100,
+                "content_type": "text/plain",
+                "status": "uploaded",
+            }
+        ],
+    }
+
+
+def test_transfer_id_alone_cannot_read_metadata_or_download():
+    mock_redis.get_transfer = AsyncMock(return_value=_ready_transfer())
+    mock_client = AsyncMock()
+    mock_client.ttl = AsyncMock(return_value=1200)
+    mock_redis.get_client = AsyncMock(return_value=mock_client)
+    mock_r2.generate_download_url = AsyncMock(return_value="https://r2.mock/download")
+
+    bare = client.get("/api/v1/transfers/tx_123")
+    wrong = client.get(
+        "/api/v1/transfers/tx_123",
+        headers={"X-Lynk-Access-Token": "not-the-token"},
+    )
+    downloads = client.post("/api/v1/transfers/tx_123/downloads", json={})
+
+    assert bare.status_code == 401
+    assert wrong.status_code == 401
+    assert downloads.status_code == 401
+    mock_r2.generate_download_url.assert_not_called()
+
+
+def test_transfer_id_alone_cannot_cancel_extend_or_complete():
+    mock_redis.get_transfer = AsyncMock(return_value=_ready_transfer())
+    mock_redis.delete_transfer = AsyncMock()
+    mock_redis.extend_transfer = AsyncMock()
+    mock_redis.update_transfer = AsyncMock()
+    mock_r2.delete_objects = AsyncMock()
+    mock_r2.verify_file_exists = AsyncMock(return_value=100)
+
+    cancel = client.delete("/api/v1/transfers/tx_123")
+    extend = client.post("/api/v1/transfers/tx_123/extend")
+    complete = client.post("/api/v1/transfers/tx_123/files/fid_1/complete")
+
+    assert cancel.status_code == 401
+    assert extend.status_code == 401
+    assert complete.status_code == 401
+    mock_redis.delete_transfer.assert_not_called()
+    mock_redis.extend_transfer.assert_not_called()
+    mock_r2.delete_objects.assert_not_called()
+
+
+def test_legacy_record_without_secrets_fails_closed():
+    legacy = _ready_transfer()
+    legacy["sender_secret"] = ""
+    legacy["access_token"] = ""
+    mock_redis.get_transfer = AsyncMock(return_value=legacy)
+
+    metadata = client.get(
+        "/api/v1/transfers/tx_123",
+        headers={"X-Lynk-Access-Token": "access-token"},
+    )
+    cancel = client.delete(
+        "/api/v1/transfers/tx_123",
+        headers={"X-Lynk-Sender-Secret": "sender-secret"},
+    )
+    assert metadata.status_code == 401
+    assert cancel.status_code == 401
