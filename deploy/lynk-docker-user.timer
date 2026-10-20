@@ -1,0 +1,11 @@
+[Unit]
+Description=Re-apply the Lynk DOCKER-USER chain periodically
+Documentation=file:/usr/local/sbin/lynk-docker-user.sh
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+Unit=lynk-docker-user.service
+
+[Install]
+WantedBy=timers.target

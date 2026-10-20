@@ -108,6 +108,33 @@ R2_BUCKET_NAME=your-bucket-name
 ## Production & Cloud Deployment Notes
 
 When deploying to environments like **Oracle Cloud (OCI)**:
-1. **Network Configuration**: Ensure an Ingress Security Rule is added in your OCI console to permit TCP traffic on the port your API is exposed (default `8000`), and save local OS firewall rules (`iptables` / `firewalld`).
+1. **Network Configuration**: The API is the only thing Cloudflare talks to, so the OCI Ingress Security Rules must allow the Cloudflare IP ranges (and nothing else) to reach the published container port. Do **not** open the API port to `0.0.0.0/0`. See [DOCKER-USER hardening](#docker-user-hardening-oci) for the host-level second layer.
 2. **Process Management**: Run the app as a background service using **systemd** (`systemctl`) or containerize it via **Docker** to ensure persistent operation and crash recovery.
-3. **TLS**: Cloudflare terminates TLS (orange-cloud proxy, origin rule from port 80 to 8000). The OCI process stays HTTP. Use Caddy or nginx with Let's Encrypt only if the Cloudflare proxy is not in front of the origin.
+3. **TLS**: Cloudflare terminates TLS (orange-cloud proxy) and connects straight to the origin's published port over plain HTTP — there is no reverse proxy on the VM. Use Caddy or nginx with Let's Encrypt only if the Cloudflare proxy is not in front of the origin.
+
+### DOCKER-USER hardening (OCI)
+
+`docker-compose.yml` publishes the API as `8000:8000`, so the container's port is reachable on **every** host interface. Docker's `nat` table DNATs that port to the container, which means the traffic is *forwarded* and can be filtered with the `DOCKER-USER` chain — the hook Docker itself provides for exactly this.
+
+`deploy/docker_user_chain.sh` installs a chain that allows only the Cloudflare edge ranges to reach `:8000` and drops everything else, without touching the host's own listeners (SSH, and the TURN server on `3478` tcp/udp, live in the `INPUT` chain):
+
+```
+Cloudflare edge CIDRs        -> RETURN   (the only allowed clients)
+-i br-<compose bridge>       -> RETURN   (container egress, container<->container, hairpin)
+-p tcp --dport 8000          -> DROP     (everything else to the API port)
+-j RETURN                              (all other forwarded traffic untouched)
+```
+
+Install it on the backend VM (it needs root):
+
+```bash
+sudo bash deploy/install_docker_user_chain.sh
+```
+
+That copies the installer to `/usr/local/sbin/lynk-docker-user.sh`, enables `lynk-docker-user.service` (runs after `docker.service`, so it also survives reboots) and `lynk-docker-user.timer` (re-applies the chain hourly), then verifies that `https://api.lynkshare.app/` still answers `200` — rolling back automatically if it does not.
+
+Notes:
+- The chain is idempotent: it compares the rendered rules and does nothing when they already match, so the hourly timer never leaves the chain empty.
+- The timer deliberately does **not** run the verification/auto-rollback. A brief Cloudflare outage must never flush the chain and re-open the API port to the internet; rolling back is a human decision.
+- `netfilter-persistent` must not be used to restore these rules: it runs *before* `docker.service` and would blank the chain on boot.
+- Rollback: `iptables -F DOCKER-USER && ip6tables -F DOCKER-USER` plus `systemctl disable --now lynk-docker-user.service lynk-docker-user.timer`.

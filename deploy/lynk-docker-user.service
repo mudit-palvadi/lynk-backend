@@ -1,0 +1,13 @@
+[Unit]
+Description=Lynk DOCKER-USER chain (Cloudflare-only access to the published API port)
+Documentation=file:/usr/local/sbin/lynk-docker-user.sh
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/lynk-docker-user.sh
+
+[Install]
+WantedBy=multi-user.target
