@@ -168,6 +168,16 @@ class TransferService:
             "transfer_status": transfer.status,
         }
 
+    async def transfer_exists(self, transfer_id: str) -> bool:
+        """Whether a transfer with this id is still live.
+
+        The 12-character id is generated with ``secrets.token_urlsafe`` and is
+        not guessable, so it is enough to authorise the TURN handshake and the
+        signalling room. Requiring the access token here would break the
+        handshake: the client asks for TURN credentials before it has one.
+        """
+        return await self.redis.get_transfer(transfer_id) is not None
+
     async def get_transfer_metadata(self, transfer_id: str, *, access_token: str | None) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:

@@ -6,9 +6,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.transfers import router as transfers_router
 from app.api.receiver import router as receiver_router
 from app.api.signaling import router as signaling_router
+from app.api.signaling import set_session_validator, start_idle_sweeper, stop_idle_sweeper
 from app.core.exceptions import register_exception_handlers
 from app.core.config import settings
 from app.services.redis_service import redis_service
+
+
+async def _signaling_session_exists(session_id: str) -> bool:
+    """Whether a signaling room id belongs to a live session.
+
+    The room id is either a transfer id (the normal P2P flow) or a
+    receiver-session id (the receiver-QR pairing flow), so both id spaces
+    count as valid. Unknown ids are refused, so a room cannot be opened for
+    an id that was never issued (POTENTIAL_ISSUES #28).
+    """
+    if await redis_service.get_transfer(session_id) is not None:
+        return True
+    return await redis_service.get_receiver_session(session_id) is not None
 
 
 @asynccontextmanager
@@ -24,8 +38,24 @@ async def lifespan(app: FastAPI):
             concurrency,
         )
     redis_service.init_pool()
-    yield
-    await redis_service.close_pool()
+
+    # Refuse signaling rooms for ids that do not exist (#28) and evict rooms
+    # that stayed idle, so a stale room cannot live for the whole process (#2).
+    if settings.SIGNALING_VALIDATE_SESSION:
+        set_session_validator(_signaling_session_exists)
+    else:
+        set_session_validator(None)
+    start_idle_sweeper(
+        interval_seconds=settings.SIGNALING_SWEEPER_INTERVAL_SECONDS,
+        max_idle_seconds=settings.SIGNALING_IDLE_EVICTION_SECONDS,
+    )
+
+    try:
+        yield
+    finally:
+        stop_idle_sweeper()
+        set_session_validator(None)
+        await redis_service.close_pool()
 
 
 app = FastAPI(

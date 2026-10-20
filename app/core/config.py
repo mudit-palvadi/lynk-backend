@@ -15,8 +15,9 @@ class Settings(BaseSettings):
     R2_BUCKET_NAME: str = "lynk-transfers"
 
     MAX_FILES_PER_TRANSFER: int = 10
-    # Cloud/R2 tiers: free = 20 MB, rewarded-ad unlock = 50 MB.
-    # Server enforces the absolute ceiling (cannot verify ad views).
+    # Client tiers: Cloud/R2 free = 15 MB, rewarded-ad unlock = 30 MB.
+    # P2P free = 20 MB, rewarded-ad unlock = 50 MB.
+    # The server enforces the absolute ceiling (cannot verify ad views).
     MAX_INDIVIDUAL_FILE_SIZE: int = 52428800
     MAX_TOTAL_TRANSFER_SIZE: int = 524288000
     MAX_TOTAL_R2_CAP_BYTES: int = 10200547328
@@ -32,6 +33,15 @@ class Settings(BaseSettings):
     TURN_URLS: str = ""  # comma-separated, e.g. "turn:turn.lynkshare.app:3478"
     TURN_SECRET: str = ""
     TURN_CREDENTIAL_TTL_SECONDS: int = 600
+
+    # Signaling (WebRTC P2P) hardening.
+    # - Validate that a room id belongs to a live transfer or receiver session
+    #   before a peer is allowed into the room (POTENTIAL_ISSUES #28).
+    # - Evict rooms that stayed idle for longer than the eviction window, so a
+    #   stale room cannot linger for the lifetime of the process (#2).
+    SIGNALING_VALIDATE_SESSION: bool = True
+    SIGNALING_IDLE_EVICTION_SECONDS: float = 60.0
+    SIGNALING_SWEEPER_INTERVAL_SECONDS: float = 30.0
 
     ALLOWED_ORIGINS: list[str] = [
         "https://lynkshare.app",
