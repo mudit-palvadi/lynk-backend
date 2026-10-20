@@ -68,8 +68,12 @@ The service coordinates the transfer of files by generating short-lived, presign
    ```
 3. Install all dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements.txt -r requirements-dev.txt
    ```
+   `requirements.txt` holds the runtime dependencies only; `requirements-dev.txt`
+   holds the test and lint tooling (`pytest`, `ruff`). The production image
+   installs `requirements.txt` alone, so neither `pytest` nor the linter ends
+   up in a shipped layer.
 
 ### Local Environment Config
 Create a `.env` file in the root of the `backend` folder:
@@ -101,7 +105,32 @@ R2_BUCKET_NAME=your-bucket-name
   ```bash
   .venv\Scripts\python -m pytest
   ```
-  Tests live in `backend/tests` (transfers, receiver sessions, signaling, TURN, limits). Do not treat an old "17 tests" or "47 tests" note as the current count.
+  Tests live in `backend/tests` (transfers, receiver sessions, signaling, TURN, limits, file-name validation, image hardening). Do not treat an old "17 tests" or "47 tests" note as the current count.
+
+---
+
+## Container Image
+
+The `Dockerfile` is a two-stage build and the image is deliberately narrow:
+
+* **The runtime image runs as a non-root user** (`lynk`, uid/gid 1001). Nothing
+  in the container needs root.
+* **Only `app/` is copied in.** There is no `COPY . .`, so a `.env`, the
+  tests, the deploy scripts, the git history and the local virtualenv cannot
+  end up in a layer.
+* **`.dockerignore` is the second half of that.** It excludes `.env` (keeping
+  `.env.example`), `.git`, `__pycache__/`, `.venv/`, the test and cache
+  directories, `tests/`, `deploy/`, and the compose files.
+* **The dependencies live in `/opt/venv`**, built in the first stage and
+  copied into the runtime stage, so the build toolchain is not in the shipped
+  image.
+* **Secrets come from the environment, not from a baked file.** `docker-compose.yml`
+  passes `env_file: .env` at run time; `config.py` reads the environment
+  first, and its `.env` path does not exist inside the container.
+
+`tests/test_docker_hardening.py` asserts all of the above, so a change that
+reintroduces a root user, a `COPY . .`, a baked `.env`, or `pytest` in the
+runtime requirements fails the suite.
 
 ---
 

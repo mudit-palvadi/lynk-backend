@@ -1,0 +1,43 @@
+# Keep the build context small and free of secrets.
+#
+# `.env` is the important one: the image is built from this directory, and
+# every file in the build context that the Dockerfile copies lands in a layer
+# where it can still be read with `docker history` or by extracting the
+# image. The container gets its configuration from the environment instead
+# (docker-compose passes env_file).
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Version control
+.git
+.gitignore
+
+# Python build and cache artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Development-only dependencies and tooling
+requirements-dev.txt
+ruff.toml
+
+# Tests never belong in a production image
+tests/
+
+# Deployment helpers (scripts and chain configuration) are applied on the host
+deploy/
+
+# Local orchestration and documentation
+docker-compose.yml
+docker-compose.*.yml
+README.md

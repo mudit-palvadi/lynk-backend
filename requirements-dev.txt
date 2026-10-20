@@ -1,5 +1,14 @@
-# Dev tooling — not required at runtime.
-# Install:  pip install -r requirements-dev.txt
+# Dev tooling — not required at runtime, and deliberately absent from the
+# production image (POTENTIAL_ISSUES #38).
+# Install:  pip install -r requirements.txt -r requirements-dev.txt
 # Lint:     python -m ruff check --fix .
 # Format:   python -m ruff format .
 ruff==0.16.4
+
+# Test framework and its dependencies. These are not in requirements.txt so
+# the Docker image never carries a test runner.
+pytest==9.1.1
+iniconfig==2.3.0
+packaging==26.2
+pluggy==1.6.0
+Pygments==2.20.0
