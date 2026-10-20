@@ -10,6 +10,7 @@ from app.core.exceptions import (
     UnauthorizedException,
 )
 from app.core.security import secrets_match
+from app.core.file_names import validate_file_name
 from app.models.transfer import TransferModel, FileItemModel
 from app.services.redis_service import RedisService
 from app.services.r2_service import R2Service
@@ -37,13 +38,20 @@ class TransferService:
 
         for f in files_input:
             size = f["file_size"]
+            # The sender chooses this name and every receiver writes it to
+            # disk, so a name that is not a single path segment is refused
+            # before it can be stored or served to anyone.
+            try:
+                file_name = validate_file_name(f["file_name"])
+            except ValueError as e:
+                raise InvalidInputException(str(e)) from e
             if size <= 0:
                 raise InvalidInputException(
-                    f"File '{f['file_name']}' size must be a positive number of bytes"
+                    f"File '{file_name}' size must be a positive number of bytes"
                 )
             if size > settings.MAX_INDIVIDUAL_FILE_SIZE:
                 raise LimitExceededException(
-                    f"File '{f['file_name']}' exceeds individual size limit"
+                    f"File '{file_name}' exceeds individual size limit"
                 )
             total_size += size
 
@@ -51,7 +59,7 @@ class TransferService:
             file_models.append(
                 FileItemModel(
                     file_id=file_id,
-                    file_name=f["file_name"],
+                    file_name=file_name,
                     file_size=size,
                     content_type=f["content_type"],
                     status="pending",

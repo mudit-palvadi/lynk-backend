@@ -31,7 +31,10 @@ class R2Service:
         return f"transfers/{transfer_id}/{file_id}"
 
     def _sanitize_filename(self, filename: str) -> str:
-        return urllib.parse.quote(filename)
+        # RFC 5987 attr-char excludes the path separator, so it is encoded
+        # too: a name that carries one would otherwise travel into the
+        # Content-Disposition header as a path.
+        return urllib.parse.quote(filename, safe="")
 
     async def generate_upload_url(
         self, transfer_id: str, file_id: str, content_type: str, content_length: int
