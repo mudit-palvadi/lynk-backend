@@ -28,16 +28,16 @@ The service coordinates the transfer of files by generating short-lived, presign
 ## API Endpoints
 
 ### File Transfers (`/api/v1/transfers`)
-* **`POST /transfers`**: Initiates a transfer session, checks file limits, and returns presigned upload URLs.
+* **`POST /transfers`**: Initiates a transfer session, checks file limits, validates every `file_name`, and returns presigned upload URLs. A name that is empty, carries surrounding whitespace, contains a path separator, contains `..`, contains a control character, or is over 255 UTF-8 bytes is rejected with **400** and a string `detail`; no transfer is created.
 * **`POST /transfers/{transfer_id}/files/{file_id}/complete`**: Confirms that a file has been successfully uploaded to Cloudflare R2 and updates status.
 * **`GET /transfers/{transfer_id}`**: Retrieves transfer metadata (file list, sizes, status, and time-to-live).
 * **`POST /transfers/{transfer_id}/downloads`**: Generates presigned download URLs for the files.
 * **`DELETE /transfers/{transfer_id}`**: Cancels the transfer and removes files from storage immediately.
 * **`POST /transfers/{transfer_id}/extend`**: Extends the session TTL to 30 minutes. It does not check that an ad was watched.
-* **`GET /transfers/{transfer_id}/turn-credentials`**: Short-lived HMAC TURN credentials. Returns `enabled: false` when TURN is not configured. Does not check that the transfer exists.
+* **`GET /transfers/{transfer_id}/turn-credentials`**: Short-lived HMAC TURN credentials. Returns `enabled: false` when TURN is not configured, and **404** for an unknown transfer id.
 
 ### Signaling
-* **`WS /ws/signaling/{session_id}`**: In-memory two-peer relay for SDP and ICE. Requires a single Uvicorn worker. Session validation is off unless `set_session_validator` is registered; `main.py` does not register it.
+* **`WS /ws/signaling/{session_id}`**: In-memory two-peer relay for SDP and ICE. Requires a single Uvicorn worker. `main.py` registers a session validator that accepts a live transfer id **or** a live receiver-session id and refuses everything else (configurable with `SIGNALING_VALIDATE_SESSION`, default on). Idle rooms are evicted by the sweeper started in the same lifespan.
 
 ### Receiver Sessions (`/api/v1/receiver-sessions`)
 * **`POST /receiver-sessions`**: Creates a temporary receiver session (status `"waiting"`) and returns a session ID.
