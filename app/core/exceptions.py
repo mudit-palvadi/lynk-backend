@@ -9,6 +9,11 @@ class LynkException(Exception):
         super().__init__(self.message)
 
 
+class UnauthorizedException(LynkException):
+    def __init__(self, message: str = "Missing or invalid credential"):
+        super().__init__(message, status_code=401)
+
+
 class InvalidInputException(LynkException):
     def __init__(self, message: str):
         super().__init__(message, status_code=400)

@@ -34,7 +34,9 @@
         "total_files",
         "total_size",
         "expires_in",
-        "files"
+        "files",
+        "sender_secret",
+        "access_token"
       ],
       "response_sample": {
         "transfer_id": "sample-transfer-id",
@@ -42,6 +44,8 @@
         "total_files": 1,
         "total_size": 1024,
         "expires_in": 3600,
+        "sender_secret": "sample-sender-secret",
+        "access_token": "sample-access-token",
         "files": [
           {
             "file_id": "sample-file-id",

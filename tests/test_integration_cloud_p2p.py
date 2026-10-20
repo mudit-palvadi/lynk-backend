@@ -68,7 +68,14 @@ async def test_bc1_cloud_happy_path_creates_and_downloads(fake_redis, monkeypatc
         "generate_download_url",
         AsyncMock(return_value="https://r2.mock/download"),
     )
-    monkeypatch.setattr(r2_mod.R2Service, "verify_file_exists", AsyncMock(return_value=1048576))
+    async def verify_matches_declared(self, transfer_id, file_id):
+        data = await redis_service.get_transfer(transfer_id)
+        for item in data["files"]:
+            if item["file_id"] == file_id:
+                return item["file_size"]
+        raise FileNotFoundError(file_id)
+
+    monkeypatch.setattr(r2_mod.R2Service, "verify_file_exists", verify_matches_declared)
 
     svc = TransferService(redis_service=redis_service, r2_service=R2Service())
     payload = [
@@ -82,11 +89,15 @@ async def test_bc1_cloud_happy_path_creates_and_downloads(fake_redis, monkeypatc
     tid = created["transfer_id"]
 
     for f in created["files"]:
-        result = await svc.complete_file(transfer_id=tid, file_id=f["file_id"])
+        result = await svc.complete_file(
+            transfer_id=tid, file_id=f["file_id"], sender_secret=created["sender_secret"]
+        )
         assert result["status"] == "uploaded"
-    meta = await svc.get_transfer_metadata(tid)
+    meta = await svc.get_transfer_metadata(tid, access_token=created["access_token"])
     assert meta["transfer_id"] == tid
-    urls = await svc.get_download_urls(transfer_id=tid)
+    assert "sender_secret" not in meta
+    assert "access_token" not in meta
+    urls = await svc.get_download_urls(transfer_id=tid, access_token=created["access_token"])
     assert len(urls["files"]) == 2
     assert urls["files"][0]["download_url"].startswith("https://r2.mock/download")
 
@@ -106,6 +117,19 @@ async def test_bc2_cloud_limits_enforced(fake_redis):
                     "content_type": "application/octet-stream",
                 }
                 for i in range(11)
+            ]
+        )
+
+    from app.core.exceptions import InvalidInputException
+
+    with pytest.raises(InvalidInputException):
+        await svc.create_transfer(
+            [
+                {
+                    "file_name": "neg.bin",
+                    "file_size": -1,
+                    "content_type": "application/octet-stream",
+                }
             ]
         )
 
@@ -138,16 +162,16 @@ async def test_bc3_cloud_lifecycle_extend_and_cancel(fake_redis, monkeypatch):
     tid = created["transfer_id"]
 
     # Extend bumps TTL toward 1800
-    extended = await svc.extend_transfer(tid)
+    extended = await svc.extend_transfer(tid, sender_secret=created["sender_secret"])
     assert extended["expires_in"] == 1800
 
-    await svc.cancel_transfer(tid)
+    await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
     from app.core.exceptions import TransferNotFoundException
 
     with pytest.raises(TransferNotFoundException):
-        await svc.get_transfer_metadata(tid)
+        await svc.get_transfer_metadata(tid, access_token=created["access_token"])
     with pytest.raises(TransferNotFoundException):
-        await svc.extend_transfer(tid)
+        await svc.extend_transfer(tid, sender_secret=created["sender_secret"])
 
 
 @pytest.mark.anyio

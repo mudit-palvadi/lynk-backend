@@ -54,6 +54,26 @@ def test_cloud_individual_file_cap_is_50mb():
     assert settings.MAX_INDIVIDUAL_FILE_SIZE == 52428800
 
 
+def test_presigned_upload_url_signs_content_length(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from app.services.r2_service import R2Service
+
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.return_value = "https://r2.example/put"
+    monkeypatch.setattr("app.services.r2_service.boto3.client", lambda *a, **k: mock_client)
+
+    svc = R2Service()
+    url = asyncio.run(svc.generate_upload_url("tid", "fid", "application/octet-stream", 4096))
+
+    assert url == "https://r2.example/put"
+    params = mock_client.generate_presigned_url.call_args.kwargs["Params"]
+    assert params["ContentLength"] == 4096
+    assert params["ContentType"] == "application/octet-stream"
+    assert params["Key"] == "transfers/tid/fid"
+
+
 def test_default_transfer_lifetime_is_10_minutes():
     assert settings.TRANSFER_LIFETIME_SECONDS == 600
 
@@ -200,13 +220,18 @@ def test_extend_transfer_returns_extended_expiry(mock_env):
         "expires_at": "2026-07-15T00:10:00Z",
         "total_files": 1,
         "total_size": 100,
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
         "files": [],
     }
     mock_env["redis"].get_transfer = AsyncMock(return_value=transfer_data)
     mock_env["redis"].extend_transfer = AsyncMock()
     mock_env["redis"].get_client = AsyncMock(return_value=AsyncMock())
 
-    response = client.post("/api/v1/transfers/tx_123/extend")
+    response = client.post(
+        "/api/v1/transfers/tx_123/extend",
+        headers={"X-Lynk-Sender-Secret": "sender-secret"},
+    )
     assert response.status_code == 200
 
     data = response.json()
@@ -247,6 +272,21 @@ def test_cors_wildcard_origin_is_not_used():
     response = _preflight("https://some-random-site.org")
     acao = response.headers.get("access-control-allow-origin")
     assert acao != "*"
+
+
+def test_cors_allows_capability_headers():
+    allowed = settings.ALLOWED_ORIGINS[0]
+    response = client.options(
+        "/api/v1/transfers",
+        headers={
+            "Origin": allowed,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-lynk-access-token,x-lynk-sender-secret",
+        },
+    )
+    allowed_headers = response.headers.get("access-control-allow-headers", "").lower()
+    assert "x-lynk-access-token" in allowed_headers
+    assert "x-lynk-sender-secret" in allowed_headers
 
 
 def test_cors_allowed_origin_is_echoed():

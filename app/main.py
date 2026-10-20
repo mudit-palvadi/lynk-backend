@@ -40,7 +40,12 @@ app.add_middleware(
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Accept"],
+    allow_headers=[
+        "Content-Type",
+        "Accept",
+        "X-Lynk-Sender-Secret",
+        "X-Lynk-Access-Token",
+    ],
 )
 
 register_exception_handlers(app)

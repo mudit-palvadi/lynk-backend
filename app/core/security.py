@@ -8,6 +8,7 @@ bucket (the limit would never fire).
 """
 
 import ipaddress
+import secrets
 
 from fastapi import Request
 
@@ -17,6 +18,17 @@ from app.services.redis_service import redis_service
 
 # Parsed once at import: the list is small and static, and the limiter runs on
 # every protected request.
+SENDER_SECRET_HEADER = "X-Lynk-Sender-Secret"
+ACCESS_TOKEN_HEADER = "X-Lynk-Access-Token"
+
+
+def secrets_match(presented: str | None, expected: str) -> bool:
+    """Constant-time check. Empty or missing values never match."""
+    if not presented or not expected:
+        return False
+    return secrets.compare_digest(presented, expected)
+
+
 _CLOUDFLARE_NETWORKS = [
     ipaddress.ip_network(cidr) for cidr in settings.CLOUDFLARE_IP_RANGES
 ]
