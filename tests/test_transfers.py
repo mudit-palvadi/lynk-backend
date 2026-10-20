@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -56,6 +56,7 @@ def test_create_transfer_success():
     assert len(data["files"]) == 2
     assert data["files"][0]["upload_url"] == "https://r2.mock/upload"
     mock_redis.set_transfer.assert_called_once()
+    mock_r2.generate_upload_url.assert_any_call(ANY, ANY, "image/jpeg", 1024 * 1024 * 10)
 
 
 def test_create_transfer_limit_exceeded_file_count():
@@ -188,6 +189,55 @@ def test_complete_file_success():
     assert data["status"] == "uploaded"
     assert data["transfer_status"] == "ready"
     mock_redis.update_transfer.assert_called_once()
+
+
+def test_create_transfer_rejects_non_positive_file_size():
+    mock_redis.set_transfer = AsyncMock()
+    for size in (0, -1024):
+        response = client.post(
+            "/api/v1/transfers",
+            json={
+                "files": [
+                    {
+                        "file_name": "a.bin",
+                        "file_size": size,
+                        "content_type": "application/octet-stream",
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 422
+    mock_redis.set_transfer.assert_not_called()
+
+
+def test_complete_file_rejects_size_mismatch():
+    transfer_data = {
+        "transfer_id": "tx_123",
+        "status": "uploading",
+        "created_at": "2026-07-15T00:00:00Z",
+        "expires_at": "2026-07-15T00:30:00Z",
+        "total_files": 1,
+        "total_size": 50,
+        "files": [
+            {
+                "file_id": "fid_1",
+                "file_name": "a.txt",
+                "file_size": 50,
+                "content_type": "text/plain",
+                "status": "pending",
+            }
+        ],
+    }
+    mock_redis.get_transfer = AsyncMock(return_value=transfer_data)
+    mock_r2.verify_file_exists = AsyncMock(return_value=50000000)
+    mock_r2.delete_objects = AsyncMock()
+    mock_redis.update_transfer = AsyncMock()
+
+    response = client.post("/api/v1/transfers/tx_123/files/fid_1/complete")
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"]
+    mock_redis.update_transfer.assert_not_called()
+    mock_r2.delete_objects.assert_awaited_once_with("tx_123", ["fid_1"])
 
 
 def test_complete_file_not_found():

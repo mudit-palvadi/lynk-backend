@@ -33,7 +33,9 @@ class R2Service:
     def _sanitize_filename(self, filename: str) -> str:
         return urllib.parse.quote(filename)
 
-    async def generate_upload_url(self, transfer_id: str, file_id: str, content_type: str) -> str:
+    async def generate_upload_url(
+        self, transfer_id: str, file_id: str, content_type: str, content_length: int
+    ) -> str:
         key = self._get_object_key(transfer_id, file_id)
 
         def _generate() -> str:
@@ -43,6 +45,7 @@ class R2Service:
                     "Bucket": self.bucket_name,
                     "Key": key,
                     "ContentType": content_type,
+                    "ContentLength": content_length,
                 },
                 ExpiresIn=settings.UPLOAD_URL_LIFETIME_SECONDS,
             )

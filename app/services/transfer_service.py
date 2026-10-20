@@ -31,6 +31,10 @@ class TransferService:
 
         for f in files_input:
             size = f["file_size"]
+            if size <= 0:
+                raise InvalidInputException(
+                    f"File '{f['file_name']}' size must be a positive number of bytes"
+                )
             if size > settings.MAX_INDIVIDUAL_FILE_SIZE:
                 raise LimitExceededException(
                     f"File '{f['file_name']}' exceeds individual size limit"
@@ -93,7 +97,9 @@ class TransferService:
 
         upload_files = []
         for f in file_models:
-            url = await self.r2.generate_upload_url(transfer_id, f.file_id, f.content_type)
+            url = await self.r2.generate_upload_url(
+                transfer_id, f.file_id, f.content_type, f.file_size
+            )
             upload_files.append(
                 {
                     "file_id": f.file_id,
@@ -123,11 +129,18 @@ class TransferService:
             raise InvalidInputException("File not found in transfer")
 
         try:
-            await self.r2.verify_file_exists(transfer_id, file_id)
-            target_file.status = "uploaded"
+            actual_size = await self.r2.verify_file_exists(transfer_id, file_id)
         except FileNotFoundError:
             target_file.status = "failed"
             raise InvalidInputException("File has not been uploaded to storage")
+
+        if actual_size != target_file.file_size:
+            await self.r2.delete_objects(transfer_id, [file_id])
+            raise InvalidInputException(
+                "Uploaded object size does not match the declared file size"
+            )
+
+        target_file.status = "uploaded"
 
         if all(f.status == "uploaded" for f in transfer.files):
             transfer.status = "ready"

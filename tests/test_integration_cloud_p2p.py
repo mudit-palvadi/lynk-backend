@@ -68,7 +68,14 @@ async def test_bc1_cloud_happy_path_creates_and_downloads(fake_redis, monkeypatc
         "generate_download_url",
         AsyncMock(return_value="https://r2.mock/download"),
     )
-    monkeypatch.setattr(r2_mod.R2Service, "verify_file_exists", AsyncMock(return_value=1048576))
+    async def verify_matches_declared(self, transfer_id, file_id):
+        data = await redis_service.get_transfer(transfer_id)
+        for item in data["files"]:
+            if item["file_id"] == file_id:
+                return item["file_size"]
+        raise FileNotFoundError(file_id)
+
+    monkeypatch.setattr(r2_mod.R2Service, "verify_file_exists", verify_matches_declared)
 
     svc = TransferService(redis_service=redis_service, r2_service=R2Service())
     payload = [
@@ -106,6 +113,19 @@ async def test_bc2_cloud_limits_enforced(fake_redis):
                     "content_type": "application/octet-stream",
                 }
                 for i in range(11)
+            ]
+        )
+
+    from app.core.exceptions import InvalidInputException
+
+    with pytest.raises(InvalidInputException):
+        await svc.create_transfer(
+            [
+                {
+                    "file_name": "neg.bin",
+                    "file_size": -1,
+                    "content_type": "application/octet-stream",
+                }
             ]
         )
 

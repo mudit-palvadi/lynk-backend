@@ -1,9 +1,9 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class FileCreate(BaseModel):
     file_name: str
-    file_size: int
+    file_size: int = Field(gt=0)
     content_type: str
 
 

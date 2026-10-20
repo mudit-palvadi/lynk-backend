@@ -54,6 +54,26 @@ def test_cloud_individual_file_cap_is_50mb():
     assert settings.MAX_INDIVIDUAL_FILE_SIZE == 52428800
 
 
+def test_presigned_upload_url_signs_content_length(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from app.services.r2_service import R2Service
+
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.return_value = "https://r2.example/put"
+    monkeypatch.setattr("app.services.r2_service.boto3.client", lambda *a, **k: mock_client)
+
+    svc = R2Service()
+    url = asyncio.run(svc.generate_upload_url("tid", "fid", "application/octet-stream", 4096))
+
+    assert url == "https://r2.example/put"
+    params = mock_client.generate_presigned_url.call_args.kwargs["Params"]
+    assert params["ContentLength"] == 4096
+    assert params["ContentType"] == "application/octet-stream"
+    assert params["Key"] == "transfers/tid/fid"
+
+
 def test_default_transfer_lifetime_is_10_minutes():
     assert settings.TRANSFER_LIFETIME_SECONDS == 600
 
