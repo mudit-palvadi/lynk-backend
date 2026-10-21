@@ -105,7 +105,24 @@ R2_BUCKET_NAME=your-bucket-name
   ```bash
   .venv\Scripts\python -m pytest
   ```
-  Tests live in `backend/tests` (transfers, receiver sessions, signaling, TURN, limits, file-name validation, image hardening). Do not treat an old "17 tests" or "47 tests" note as the current count.
+  Tests live in `backend/tests` (transfers, receiver sessions, signaling, TURN, limits, file-name validation, image hardening, CI contract). Do not treat an old "17 tests" or "47 tests" note as the current count.
+
+* **Run the linter**:
+  ```bash
+  .venv\Scripts\python -m ruff check .
+  ```
+  The line-length limit is 100 (`ruff.toml`). CI runs this, so a long line is a failing check, not a suggestion.
+
+### Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push to `main`, on every pull request,
+and on demand. It installs `requirements.txt` plus `requirements-dev.txt`, then
+runs `ruff check .` and `pytest -q` with Python pinned to `3.13`. **No Redis
+service is needed** - `tests/conftest.py` installs a double by default, so the
+suite is hermetic. A newer commit cancels an in-flight run, and no step may
+use `continue-on-error`.
+
+The workflow file is itself covered by `tests/test_ci_pipeline.py`.
 
 ---
 
