@@ -94,7 +94,9 @@ async def cancel_transfer(
 
 @router.get(
     "/{transfer_id}/turn-credentials",
-    dependencies=[Depends(RateLimiter(limit=10, window_seconds=60, bucket="transfer-turn-credentials"))],
+    dependencies=[
+        Depends(RateLimiter(limit=10, window_seconds=60, bucket="transfer-turn-credentials"))
+    ],
 )
 async def get_turn_credentials(
     transfer_id: str,
