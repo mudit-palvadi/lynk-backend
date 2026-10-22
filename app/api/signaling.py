@@ -47,6 +47,14 @@ _HISTORY_CAP = 100
 _MAX_MEMBERS = 2
 DEFAULT_IDLE_EVICTION_SECONDS = 60.0
 
+# The most history a room may keep, in bytes.
+#
+# The frame cap alone is not enough: a hundred frames of the largest accepted
+# size is 1.6 MB per room, and any id opens a room. The byte cap keeps a room
+# small no matter how large its frames are. Signaling frames are JSON, so the
+# frame text length is the byte count for every practical frame.
+_HISTORY_BYTES_CAP = 256 * 1024
+
 # The largest frame the relay accepts, in bytes.
 #
 # A signaling frame is a small JSON message: an SDP offer, an answer, a
@@ -75,6 +83,21 @@ def _get_room(session_id: str) -> dict[str, Any]:
 
 def _touch(room: dict[str, Any]) -> None:
     room["last_activity"] = time.monotonic()
+
+
+def _trim_history(room: dict[str, Any]) -> None:
+    """Keep the room history short, by frames and by bytes.
+
+    The newest frames are the ones a late peer needs, so trimming drops from
+    the front: the room keeps the tail of the conversation.
+    """
+    history = room["history"]
+    if len(history) > _HISTORY_CAP:
+        del history[: len(history) - _HISTORY_CAP]
+    total = sum(len(raw) for _, raw in history)
+    while history and total > _HISTORY_BYTES_CAP:
+        _, dropped = history.pop(0)
+        total -= len(dropped)
 
 
 def evict_idle_rooms(
@@ -202,8 +225,7 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
                 continue
 
             room["history"].append((role, raw))
-            if len(room["history"]) > _HISTORY_CAP:
-                del room["history"][: len(room["history"]) - _HISTORY_CAP]
+            _trim_history(room)
 
             dead: list[Any] = []
             for m in list(room["members"]):
