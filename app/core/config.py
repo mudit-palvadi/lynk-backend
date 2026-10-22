@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     # - Evict rooms that stayed idle for longer than the eviction window, so a
     #   stale room cannot linger for the lifetime of the process (#2).
     SIGNALING_VALIDATE_SESSION: bool = True
+    # Require the transfer access token as the first signaling frame (#32).
+    SIGNALING_REQUIRE_ACCESS: bool = False
     SIGNALING_IDLE_EVICTION_SECONDS: float = 60.0
     SIGNALING_SWEEPER_INTERVAL_SECONDS: float = 30.0
 

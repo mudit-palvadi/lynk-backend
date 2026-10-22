@@ -6,12 +6,18 @@ The relay reads it before the socket joins the room and drops it, so a peer
 can never read a token out of the replayed history.
 """
 
+import asyncio
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from app.api import signaling as signaling_module
 from app.api.signaling import set_access_validator
-from app.main import app
+from app.core.config import settings
+from app.main import _signaling_access_valid, app
+from app.services.redis_service import redis_service
 
 
 @pytest.fixture()
@@ -92,3 +98,51 @@ class TestAccessCheck:
             assert ws.receive_json()["msg"] == "auth required"
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_json()
+
+
+class TestTransferAccessValidator:
+    """The room token is the transfer's access token (#32)."""
+
+    def test_a_transfer_room_accepts_its_access_token(self):
+        with patch.object(
+            redis_service,
+            "get_transfer",
+            new=AsyncMock(return_value={"access_token": "tok"}),
+        ):
+            assert asyncio.run(_signaling_access_valid("t1", "tok")) is True
+
+    def test_a_transfer_room_refuses_another_token(self):
+        with patch.object(
+            redis_service,
+            "get_transfer",
+            new=AsyncMock(return_value={"access_token": "tok"}),
+        ):
+            assert asyncio.run(_signaling_access_valid("t1", "nope")) is False
+
+    def test_a_receiver_session_room_stays_id_only(self):
+        # The pairing QR *is* the secret and the record carries no token, so
+        # those rooms keep accepting the id alone.
+        with patch.object(
+            redis_service, "get_transfer", new=AsyncMock(return_value=None)
+        ), patch.object(
+            redis_service,
+            "get_receiver_session",
+            new=AsyncMock(return_value={"session_id": "r1"}),
+        ):
+            assert asyncio.run(_signaling_access_valid("r1", "anything")) is True
+
+    def test_an_unknown_id_is_refused(self):
+        with patch.object(
+            redis_service, "get_transfer", new=AsyncMock(return_value=None)
+        ), patch.object(
+            redis_service, "get_receiver_session", new=AsyncMock(return_value=None)
+        ):
+            assert asyncio.run(_signaling_access_valid("made-up", "anything")) is False
+
+
+class TestLifespanWiring:
+    def test_the_access_validator_is_registered_when_required(self):
+        with patch.object(settings, "SIGNALING_REQUIRE_ACCESS", True):
+            with TestClient(app):
+                assert signaling_module._access_validator is not None
+
