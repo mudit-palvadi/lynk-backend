@@ -62,6 +62,33 @@ _HISTORY_BYTES_CAP = 256 * 1024
 # relay as storage, so the socket is closed instead of the frame being kept.
 MAX_FRAME_BYTES = 16 * 1024
 
+# How many signaling sockets one client address may hold at once.
+#
+# Each socket costs a room slot, a history buffer and a task, and the relay
+# accepts any id as a room, so one address must not be able to hold an
+# unbounded number of them.
+_MAX_SOCKETS_PER_HOST = 10
+
+_open_by_host: dict[str, int] = {}
+
+
+def _open_host_connection(host: str) -> bool:
+    """Reserve a socket slot for a client address; False when it is full."""
+    count = _open_by_host.get(host, 0)
+    if count >= _MAX_SOCKETS_PER_HOST:
+        return False
+    _open_by_host[host] = count + 1
+    return True
+
+
+def _close_host_connection(host: str) -> None:
+    count = _open_by_host.get(host, 0) - 1
+    if count > 0:
+        _open_by_host[host] = count
+    else:
+        _open_by_host.pop(host, None)
+
+
 _session_validator: Callable[[str], Awaitable[bool]] | None = None
 
 
@@ -171,72 +198,83 @@ def stop_idle_sweeper() -> None:
 async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None = None) -> None:
     await websocket.accept()
 
-    if _session_validator is not None and not await _session_validator(session_id):
-        await websocket.send_text(json.dumps({"type": "error", "msg": "unknown session"}))
+    host = websocket.client.host if websocket.client else "unknown"
+    if not _open_host_connection(host):
+        await websocket.send_text(json.dumps({"type": "error", "msg": "too many connections"}))
         await websocket.close()
         return
-
-    room = _get_room(session_id)
-    if len(room["members"]) >= _MAX_MEMBERS:
-        await websocket.send_text(json.dumps({"type": "error", "msg": "room full"}))
-        await websocket.close()
-        return
-
-    # Clean up stale history from a previous peer with the same role, so
-    # reconnecting senders don't leave ghost offers for future receivers.
-    if role is not None:
-        room["history"] = [h for h in room["history"] if h[0] != role]
-    # Replay buffered history authored by the *opposite* role only, so a
-    # reconnecting peer never receives its own offer back (ISSUE-05).
-    for entry_role, raw in list(room["history"]):
-        if _should_replay(entry_role, role):
-            await websocket.send_text(raw)
-    room["members"].append({"ws": websocket, "role": role})
-    _touch(room)
 
     try:
-        while True:
-            raw = await websocket.receive_text()
-            _touch(room)
-            if len(raw.encode("utf-8")) > MAX_FRAME_BYTES:
-                # Too large to be a signaling message. Close the socket rather
-                # than keep it: the peer is either confused or using the relay
-                # as storage.
-                await websocket.send_text(json.dumps({"type": "error", "msg": "frame too large"}))
-                _prune_member(room, websocket)
-                _touch(room)
-                await websocket.close()
-                return
-            try:
-                decoded = json.loads(raw)
-                if not isinstance(decoded, dict):
-                    raise ValueError("not an object")
-            except (json.JSONDecodeError, ValueError):
-                await websocket.send_text(json.dumps({"type": "error", "msg": "invalid JSON"}))
-                continue
+        if _session_validator is not None and not await _session_validator(session_id):
+            await websocket.send_text(json.dumps({"type": "error", "msg": "unknown session"}))
+            await websocket.close()
+            return
 
-            # In-band role declaration (ISSUE-05): stored, never relayed.
-            if decoded.get("type") == "hello":
-                declared = decoded.get("role")
-                for m in room["members"]:
-                    if m["ws"] is websocket and declared in ("sender", "receiver"):
-                        m["role"] = declared
-                        break
-                continue
+        room = _get_room(session_id)
+        if len(room["members"]) >= _MAX_MEMBERS:
+            await websocket.send_text(json.dumps({"type": "error", "msg": "room full"}))
+            await websocket.close()
+            return
 
-            room["history"].append((role, raw))
-            _trim_history(room)
-
-            dead: list[Any] = []
-            for m in list(room["members"]):
-                if m["ws"] is websocket:
-                    continue
-                ok = await _safe_send(m, raw)
-                if not ok:
-                    dead.append(m["ws"])
-            for bad in dead:
-                _prune_member(room, bad)
-
-    except WebSocketDisconnect:
-        _prune_member(room, websocket)
+        # Clean up stale history from a previous peer with the same role, so
+        # reconnecting senders don't leave ghost offers for future receivers.
+        if role is not None:
+            room["history"] = [h for h in room["history"] if h[0] != role]
+        # Replay buffered history authored by the *opposite* role only, so a
+        # reconnecting peer never receives its own offer back (ISSUE-05).
+        for entry_role, raw in list(room["history"]):
+            if _should_replay(entry_role, role):
+                await websocket.send_text(raw)
+        room["members"].append({"ws": websocket, "role": role})
         _touch(room)
+
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                _touch(room)
+                if len(raw.encode("utf-8")) > MAX_FRAME_BYTES:
+                    # Too large to be a signaling message. Close the socket rather
+                    # than keep it: the peer is either confused or using the relay
+                    # as storage.
+                    await websocket.send_text(
+                        json.dumps({"type": "error", "msg": "frame too large"})
+                    )
+                    _prune_member(room, websocket)
+                    _touch(room)
+                    await websocket.close()
+                    return
+                try:
+                    decoded = json.loads(raw)
+                    if not isinstance(decoded, dict):
+                        raise ValueError("not an object")
+                except (json.JSONDecodeError, ValueError):
+                    await websocket.send_text(json.dumps({"type": "error", "msg": "invalid JSON"}))
+                    continue
+
+                # In-band role declaration (ISSUE-05): stored, never relayed.
+                if decoded.get("type") == "hello":
+                    declared = decoded.get("role")
+                    for m in room["members"]:
+                        if m["ws"] is websocket and declared in ("sender", "receiver"):
+                            m["role"] = declared
+                            break
+                    continue
+
+                room["history"].append((role, raw))
+                _trim_history(room)
+
+                dead: list[Any] = []
+                for m in list(room["members"]):
+                    if m["ws"] is websocket:
+                        continue
+                    ok = await _safe_send(m, raw)
+                    if not ok:
+                        dead.append(m["ws"])
+                for bad in dead:
+                    _prune_member(room, bad)
+
+        except WebSocketDisconnect:
+            _prune_member(room, websocket)
+            _touch(room)
+    finally:
+        _close_host_connection(host)
