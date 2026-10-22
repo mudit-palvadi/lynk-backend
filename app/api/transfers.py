@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Request, status
 from app.schemas.transfer import (
     TransferCreate,
     TransferCreateResponse,
@@ -12,7 +12,7 @@ from app.services.redis_service import redis_service
 from app.services.r2_service import r2_service
 from app.services.transfer_service import TransferService
 
-from app.core.security import RateLimiter
+from app.core.security import RateLimiter, resolve_client_ip
 from app.core.config import settings
 from app.core.exceptions import TransferNotFoundException
 from app.services.turn_service import generate_turn_credentials
@@ -31,10 +31,12 @@ def get_transfer_service() -> TransferService:
     dependencies=[Depends(RateLimiter(limit=5, window_seconds=60, bucket="transfer-create"))],
 )
 async def create_transfer(
-    payload: TransferCreate, service: TransferService = Depends(get_transfer_service)
+    request: Request,
+    payload: TransferCreate,
+    service: TransferService = Depends(get_transfer_service),
 ):
     files = [f.model_dump() for f in payload.files]
-    return await service.create_transfer(files)
+    return await service.create_transfer(files, client_ip=resolve_client_ip(request))
 
 
 @router.post("/{transfer_id}/files/{file_id}/complete", response_model=FileCompleteResponse)

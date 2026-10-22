@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 from app.core.exceptions import (
     LimitExceededException,
+    RateLimitExceededException,
     TransferNotFoundException,
     TransferNotReadyException,
     InvalidInputException,
@@ -28,7 +29,9 @@ class TransferService:
         if not secrets_match(presented, expected):
             raise UnauthorizedException()
 
-    async def create_transfer(self, files_input: list[dict]) -> dict:
+    async def create_transfer(
+        self, files_input: list[dict], *, client_ip: str | None = None
+    ) -> dict:
         if len(files_input) > settings.MAX_FILES_PER_TRANSFER:
             raise LimitExceededException("Maximum file count limit exceeded")
 
@@ -69,6 +72,20 @@ class TransferService:
 
         client = await self.redis.get_client()
         current_time = int(time.time())
+
+        # Two minutes of reservation and a five-a-minute limiter still let one
+        # address hold ten creates in flight, which is enough to fill the whole
+        # capacity cap and lock everyone else out (#34).
+        open_key = f"lynk:open:{client_ip}" if client_ip else None
+        if open_key:
+            await client.zremrangebyscore(open_key, "-inf", current_time)
+            open_count = int(await client.zcard(open_key))
+            if open_count >= settings.MAX_OPEN_RESERVATIONS_PER_CLIENT:
+                raise RateLimitExceededException(
+                    "Too many unfinished transfers from this address. "
+                    "Finish or cancel one and try again."
+                )
+
         await client.zremrangebyscore("lynk:active_transfers", "-inf", current_time)
         active_items = await client.zrange("lynk:active_transfers", 0, -1)
         current_active_size = 0
@@ -113,6 +130,11 @@ class TransferService:
         await client.zadd(
             "lynk:active_transfers", {f"{transfer_id}:{total_size}": reservation_until}
         )
+        if open_key:
+            await client.zadd(open_key, {transfer_id: reservation_until})
+            await client.expire(
+                open_key, settings.UNFILLED_RESERVATION_SECONDS * 2
+            )
 
         upload_files = []
         for f in file_models:
