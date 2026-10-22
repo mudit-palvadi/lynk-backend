@@ -47,6 +47,13 @@ _HISTORY_CAP = 100
 _MAX_MEMBERS = 2
 DEFAULT_IDLE_EVICTION_SECONDS = 60.0
 
+# The largest frame the relay accepts, in bytes.
+#
+# A signaling frame is a small JSON message: an SDP offer, an answer, a
+# candidate. Anything larger is either a mistake or an attempt to use the
+# relay as storage, so the socket is closed instead of the frame being kept.
+MAX_FRAME_BYTES = 16 * 1024
+
 _session_validator: Callable[[str], Awaitable[bool]] | None = None
 
 
@@ -168,6 +175,15 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
         while True:
             raw = await websocket.receive_text()
             _touch(room)
+            if len(raw.encode("utf-8")) > MAX_FRAME_BYTES:
+                # Too large to be a signaling message. Close the socket rather
+                # than keep it: the peer is either confused or using the relay
+                # as storage.
+                await websocket.send_text(json.dumps({"type": "error", "msg": "frame too large"}))
+                _prune_member(room, websocket)
+                _touch(room)
+                await websocket.close()
+                return
             try:
                 decoded = json.loads(raw)
                 if not isinstance(decoded, dict):
