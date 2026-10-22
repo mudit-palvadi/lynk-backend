@@ -11,7 +11,8 @@
   "enums": {
     "transfer_status": ["uploading", "ready", "expired", "cancelled"],
     "file_status": ["pending", "uploaded", "failed"],
-    "receiver_session_status": ["waiting", "attached", "expired"]
+    "receiver_session_status": ["waiting", "attached", "expired"],
+    "sender_session_status": ["waiting", "joined", "attached", "expired"]
   },
   "endpoints": [
     {

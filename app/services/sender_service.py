@@ -2,7 +2,11 @@ import secrets
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
-from app.core.exceptions import ServiceUnavailableException
+from app.core.exceptions import (
+    ServiceUnavailableException,
+    TransferNotFoundException,
+    TransferNotReadyException,
+)
 from app.models.sender import SenderSessionModel
 from app.services.redis_service import RedisService
 
@@ -57,3 +61,52 @@ class SenderService:
             }
 
         raise ServiceUnavailableException("Could not allocate a session code")
+
+    async def _ttl(self, session_id: str) -> int:
+        client = await self.redis.get_client()
+        key = self.redis._get_sender_key(session_id)
+        ttl = await client.ttl(key)
+        return max(0, ttl) if ttl != -2 else 0
+
+    async def join_sender_session(self, code: str, receiver_pk: str) -> dict:
+        session_id = await self.redis.get_sender_code(code)
+        if not session_id:
+            raise TransferNotFoundException("Session code not found or expired")
+
+        data = await self.redis.get_sender_session(session_id)
+        if not data:
+            raise TransferNotFoundException("Session code not found or expired")
+
+        session = SenderSessionModel.model_validate(data)
+
+        # A code names the session, it does not own it: the first receiver that
+        # presents a key claims the session, and nobody else can take it over.
+        if session.receiver_pk and session.receiver_pk != receiver_pk:
+            raise TransferNotReadyException("This session already has a receiver")
+
+        session.receiver_pk = receiver_pk
+        session.status = "joined"
+        await self.redis.update_sender_session(session_id, session.model_dump())
+
+        return {
+            "session_id": session_id,
+            "status": session.status,
+            "expires_in": await self._ttl(session_id),
+        }
+
+    async def get_sender_session(self, session_id: str) -> dict:
+        data = await self.redis.get_sender_session(session_id)
+        if not data:
+            raise TransferNotFoundException("Sender session not found or expired")
+
+        session = SenderSessionModel.model_validate(data)
+
+        # The wrapped key never travels back to the sender: it already holds
+        # the AES key, and the receiver collects it once through the session.
+        return {
+            "session_id": session.session_id,
+            "status": session.status,
+            "receiver_pk": session.receiver_pk,
+            "transfer_id": session.transfer_id,
+            "expires_in": await self._ttl(session_id),
+        }

@@ -12,7 +12,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
-from app.core.exceptions import ServiceUnavailableException
+from app.core.exceptions import (
+    ServiceUnavailableException,
+    TransferNotFoundException,
+    TransferNotReadyException,
+)
 from app.main import app
 from app.services.redis_service import redis_service
 from app.services.sender_service import SenderService
@@ -20,6 +24,8 @@ from app.services.sender_service import SenderService
 pytestmark = pytest.mark.anyio
 
 CODE_PATTERN = re.compile(r"^\d{6}$")
+PK = "receiver-public-key-000000000000000000"
+OTHER_PK = "another-public-key-111111111111111111"
 
 
 @pytest.fixture()
@@ -99,3 +105,78 @@ class TestSenderSessionRoute:
         assert CODE_PATTERN.match(body["code"])
         assert body["status"] == "waiting"
         assert body["expires_in"] == settings.SENDER_SESSION_LIFETIME_SECONDS
+
+
+class TestJoinSenderSession:
+    async def test_the_receiver_publishes_its_key(self, fake_redis):
+        created = await _service().create_sender_session()
+
+        joined = await _service().join_sender_session(created["code"], PK)
+
+        assert joined["session_id"] == created["session_id"]
+        assert joined["status"] == "joined"
+        stored = await redis_service.get_sender_session(created["session_id"])
+        assert stored["receiver_pk"] == PK
+        assert stored["status"] == "joined"
+
+    async def test_an_unknown_code_is_refused(self, fake_redis):
+        with pytest.raises(TransferNotFoundException):
+            await _service().join_sender_session("000000", PK)
+
+    async def test_the_same_receiver_can_join_twice(self, fake_redis):
+        created = await _service().create_sender_session()
+        await _service().join_sender_session(created["code"], PK)
+
+        again = await _service().join_sender_session(created["code"], PK)
+
+        assert again["status"] == "joined"
+
+    async def test_a_second_receiver_is_refused(self, fake_redis):
+        created = await _service().create_sender_session()
+        await _service().join_sender_session(created["code"], PK)
+
+        with pytest.raises(TransferNotReadyException):
+            await _service().join_sender_session(created["code"], OTHER_PK)
+
+    async def test_an_expired_code_is_refused(self, fake_redis):
+        created = await _service().create_sender_session()
+        await fake_redis.delete(f"lynk:sender_code:{created['code']}")
+
+        with pytest.raises(TransferNotFoundException):
+            await _service().join_sender_session(created["code"], PK)
+
+
+class TestSenderSessionPoll:
+    async def test_the_sender_sees_the_key_but_never_a_wrapped_key(
+        self, fake_redis
+    ):
+        created = await _service().create_sender_session()
+        await _service().join_sender_session(created["code"], PK)
+
+        view = await _service().get_sender_session(created["session_id"])
+
+        assert view["status"] == "joined"
+        assert view["receiver_pk"] == PK
+        assert "wrapped_key" not in view
+        assert 0 <= view["expires_in"] <= settings.SENDER_SESSION_LIFETIME_SECONDS
+
+    async def test_an_unknown_session_is_refused(self, fake_redis):
+        with pytest.raises(TransferNotFoundException):
+            await _service().get_sender_session("nope")
+
+
+class TestJoinRoute:
+    async def test_the_route_joins_a_code(self, fake_redis):
+        created = await _service().create_sender_session()
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/sender-sessions/join",
+                json={"code": created["code"], "receiver_pk": PK},
+            )
+            view = client.get(f"/api/v1/sender-sessions/{created['session_id']}")
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "joined"
+        assert view.status_code == 200
+        assert view.json()["receiver_pk"] == PK
