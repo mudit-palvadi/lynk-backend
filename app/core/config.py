@@ -47,7 +47,12 @@ class Settings(BaseSettings):
     #   stale room cannot linger for the lifetime of the process (#2).
     SIGNALING_VALIDATE_SESSION: bool = True
     # Require the transfer access token as the first signaling frame (#32).
-    SIGNALING_REQUIRE_ACCESS: bool = True
+    # Off until a build carrying the client side is in closed testing; turn it on
+    # with SIGNALING_REQUIRE_ACCESS=true once that build is out, because a build
+    # that does not send the frame would lose its direct path and fall back to the
+    # cloud. The relay still swallows the frame when this is off, so the live site
+    # can send it to an older backend safely.
+    SIGNALING_REQUIRE_ACCESS: bool = False
     SIGNALING_IDLE_EVICTION_SECONDS: float = 60.0
     SIGNALING_SWEEPER_INTERVAL_SECONDS: float = 30.0
 
