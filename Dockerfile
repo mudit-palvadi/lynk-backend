@@ -46,4 +46,7 @@ USER lynk
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# The signaling relay refuses a frame over 16 KB on its own (#31). The
+# transport cap is the backstop beneath it: uvicorn's default is 16 MiB, so
+# without this an absurd frame is buffered before the app can reject it.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-max-size", "65536"]

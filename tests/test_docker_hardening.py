@@ -40,6 +40,16 @@ def test_dockerfile_exists() -> None:
     assert DOCKERFILE.is_file()
 
 
+def test_the_websocket_message_size_is_capped(dockerfile_text: str) -> None:
+    """#31: the relay refuses a frame over 16 KB itself.
+
+    The transport cap underneath it is the backstop: uvicorn buffers a
+    message before the app sees it, so its default of 16 MiB would let one
+    client make the process hold a huge frame.
+    """
+    assert '"--ws-max-size", "65536"' in dockerfile_text
+
+
 def test_dockerignore_exists() -> None:
     assert DOCKERIGNORE.is_file()
 
