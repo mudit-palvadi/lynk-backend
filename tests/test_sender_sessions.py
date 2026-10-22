@@ -26,6 +26,7 @@ pytestmark = pytest.mark.anyio
 CODE_PATTERN = re.compile(r"^\d{6}$")
 PK = "receiver-public-key-000000000000000000"
 OTHER_PK = "another-public-key-111111111111111111"
+WRAPPED = "w" * 88
 
 
 @pytest.fixture()
@@ -180,3 +181,84 @@ class TestJoinRoute:
         assert response.json()["status"] == "joined"
         assert view.status_code == 200
         assert view.json()["receiver_pk"] == PK
+
+
+class TestAttachTransfer:
+    async def _joined(self) -> dict:
+        created = await _service().create_sender_session()
+        await _service().join_sender_session(created["code"], PK)
+        return created
+
+    async def test_the_sender_stores_the_wrapped_key(self, fake_redis):
+        created = await self._joined()
+
+        attached = await _service().attach_transfer(
+            created["session_id"], "transfer-1", WRAPPED
+        )
+
+        assert attached["status"] == "attached"
+        view = await _service().get_sender_session(created["session_id"])
+        assert view["transfer_id"] == "transfer-1"
+
+    async def test_attaching_without_a_receiver_is_refused(self, fake_redis):
+        created = await _service().create_sender_session()
+
+        with pytest.raises(TransferNotReadyException):
+            await _service().attach_transfer(
+                created["session_id"], "transfer-1", WRAPPED
+            )
+
+    async def test_an_unknown_session_is_refused(self, fake_redis):
+        with pytest.raises(TransferNotFoundException):
+            await _service().attach_transfer("nope", "transfer-1", WRAPPED)
+
+
+class TestCollectKey:
+    async def _attached(self) -> dict:
+        created = await _service().create_sender_session()
+        await _service().join_sender_session(created["code"], PK)
+        await _service().attach_transfer(created["session_id"], "transfer-1", WRAPPED)
+        return created
+
+    async def test_the_receiver_collects_the_key_once(self, fake_redis):
+        created = await self._attached()
+
+        first = await _service().collect_key(created["session_id"])
+        assert first["transfer_id"] == "transfer-1"
+        assert first["wrapped_key"] == WRAPPED
+
+        with pytest.raises(TransferNotReadyException):
+            await _service().collect_key(created["session_id"])
+
+    async def test_collecting_before_the_wrap_is_refused(self, fake_redis):
+        created = await _service().create_sender_session()
+        await _service().join_sender_session(created["code"], PK)
+
+        with pytest.raises(TransferNotReadyException):
+            await _service().collect_key(created["session_id"])
+
+    async def test_an_unknown_session_is_refused(self, fake_redis):
+        with pytest.raises(TransferNotFoundException):
+            await _service().collect_key("nope")
+
+
+class TestPairingRoute:
+    async def test_the_sender_attaches_and_the_receiver_collects(self, fake_redis):
+        created = await _service().create_sender_session()
+        path = created["session_id"]
+
+        with TestClient(app) as client:
+            client.post(
+                "/api/v1/sender-sessions/join",
+                json={"code": created["code"], "receiver_pk": PK},
+            )
+            attached = client.post(
+                f"/api/v1/sender-sessions/{path}/attach",
+                json={"transfer_id": "transfer-1", "wrapped_key": WRAPPED},
+            )
+            collected = client.get(f"/api/v1/sender-sessions/{path}/key")
+
+        assert attached.status_code == 200
+        assert attached.json()["status"] == "attached"
+        assert collected.status_code == 200
+        assert collected.json()["wrapped_key"] == WRAPPED

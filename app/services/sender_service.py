@@ -110,3 +110,47 @@ class SenderService:
             "transfer_id": session.transfer_id,
             "expires_in": await self._ttl(session_id),
         }
+
+    async def attach_transfer(
+        self, session_id: str, transfer_id: str, wrapped_key: str
+    ) -> dict:
+        data = await self.redis.get_sender_session(session_id)
+        if not data:
+            raise TransferNotFoundException("Sender session not found or expired")
+
+        session = SenderSessionModel.model_validate(data)
+        if not session.receiver_pk:
+            raise TransferNotReadyException("No receiver has joined this session")
+
+        session.transfer_id = transfer_id
+        session.wrapped_key = wrapped_key
+        session.status = "attached"
+        await self.redis.update_sender_session(session_id, session.model_dump())
+
+        return {
+            "session_id": session_id,
+            "status": session.status,
+            "expires_in": await self._ttl(session_id),
+        }
+
+    async def collect_key(self, session_id: str) -> dict:
+        data = await self.redis.get_sender_session(session_id)
+        if not data:
+            raise TransferNotFoundException("Sender session not found or expired")
+
+        session = SenderSessionModel.model_validate(data)
+        if session.status != "attached" or not session.wrapped_key:
+            raise TransferNotReadyException("The sender has not wrapped the key yet")
+
+        res = {
+            "transfer_id": session.transfer_id,
+            "wrapped_key": session.wrapped_key,
+            "expires_in": await self._ttl(session_id),
+        }
+
+        # Single-use delivery: the key is wiped once handed over, so a later
+        # reader of the same session cannot obtain it again.
+        session.wrapped_key = None
+        await self.redis.update_sender_session(session_id, session.model_dump())
+
+        return res

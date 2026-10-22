@@ -2,9 +2,12 @@ from fastapi import APIRouter, Depends, status
 
 from app.core.security import RateLimiter
 from app.schemas.sender import (
+    SenderSessionAttachRequest,
+    SenderSessionAttachResponse,
     SenderSessionCreateResponse,
     SenderSessionJoinRequest,
     SenderSessionJoinResponse,
+    SenderSessionKeyResponse,
     SenderSessionResponse,
 )
 from app.services.redis_service import redis_service
@@ -49,3 +52,28 @@ async def get_sender_session(
     service: SenderService = Depends(get_sender_service),
 ):
     return await service.get_sender_session(session_id)
+
+
+@router.post("/{session_id}/attach", response_model=SenderSessionAttachResponse)
+async def attach_transfer(
+    session_id: str,
+    payload: SenderSessionAttachRequest,
+    service: SenderService = Depends(get_sender_service),
+):
+    return await service.attach_transfer(
+        session_id, payload.transfer_id, payload.wrapped_key
+    )
+
+
+@router.get(
+    "/{session_id}/key",
+    response_model=SenderSessionKeyResponse,
+    dependencies=[
+        Depends(RateLimiter(limit=20, window_seconds=60, bucket="sender-session-key"))
+    ],
+)
+async def collect_key(
+    session_id: str,
+    service: SenderService = Depends(get_sender_service),
+):
+    return await service.collect_key(session_id)
