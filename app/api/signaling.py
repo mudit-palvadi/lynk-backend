@@ -18,6 +18,10 @@ Enforcement:
 Hardening (audit ISSUES 04-07):
 - Optional session validation: set `set_session_validator(fn)` (wired in
   main.py when SIGNALING_VALIDATE_SESSION=true) -- unknown ids are refused.
+- Optional access check: set `set_access_validator(fn)` (wired in main.py when
+  SIGNALING_REQUIRE_ACCESS=true) -- the first frame must then be
+  `{"type":"auth","token":"..."}`. It is consumed before the socket joins the
+  room, so the token is never relayed and never replayed from history.
 - Rooms are capped at two members; a third connection gets an error frame
   and is closed.
 - Fan-out wraps every send: a dying socket is pruned instead of killing the
@@ -96,6 +100,46 @@ def set_session_validator(fn: Callable[[str], Awaitable[bool]] | None) -> None:
     """Register an async validator; returning False refuses the connection."""
     global _session_validator
     _session_validator = fn
+
+
+# How long a socket may take to present its access token once one is required.
+#
+# A WebSocket handshake carries no custom header from a browser, so the
+# credential arrives as the first frame instead. The window is short because a
+# socket that is waiting is a socket that is holding a host slot and a room.
+AUTH_TIMEOUT_SECONDS = 5.0
+
+_access_validator: Callable[[str, str], Awaitable[bool]] | None = None
+
+
+def set_access_validator(fn: Callable[[str, str], Awaitable[bool]] | None) -> None:
+    """Register an async (session_id, token) validator; False refuses the join."""
+    global _access_validator
+    _access_validator = fn
+
+
+async def _read_auth_frame(websocket: WebSocket) -> str | None:
+    """Return the token in the first frame, or None when it is not an auth frame.
+
+    The frame is read before the socket joins the room and is dropped, so the
+    token never enters the history a later peer receives.
+    """
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=AUTH_TIMEOUT_SECONDS)
+    except (TimeoutError, WebSocketDisconnect):
+        return None
+    if len(raw.encode("utf-8")) > MAX_FRAME_BYTES:
+        return None
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(decoded, dict) or decoded.get("type") != "auth":
+        return None
+    token = decoded.get("token")
+    if not isinstance(token, str) or not token:
+        return None
+    return token
 
 
 def _get_room(session_id: str) -> dict[str, Any]:
@@ -210,6 +254,13 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
             await websocket.close()
             return
 
+        if _access_validator is not None:
+            token = await _read_auth_frame(websocket)
+            if token is None or not await _access_validator(session_id, token):
+                await websocket.send_text(json.dumps({"type": "error", "msg": "auth required"}))
+                await websocket.close()
+                return
+
         room = _get_room(session_id)
         if len(room["members"]) >= _MAX_MEMBERS:
             await websocket.send_text(json.dumps({"type": "error", "msg": "room full"}))
@@ -249,6 +300,11 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
                         raise ValueError("not an object")
                 except (json.JSONDecodeError, ValueError):
                     await websocket.send_text(json.dumps({"type": "error", "msg": "invalid JSON"}))
+                    continue
+
+                # The token is consumed before the room is joined; a late one is
+                # dropped here so it is never relayed or replayed.
+                if decoded.get("type") == "auth":
                     continue
 
                 # In-band role declaration (ISSUE-05): stored, never relayed.
