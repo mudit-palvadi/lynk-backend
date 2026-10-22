@@ -170,6 +170,86 @@ class RedisService:
             logger.error(f"Redis delete_receiver_session failed: {e}")
             raise ServiceUnavailableException("Failed to delete receiver session")
 
+    def _get_sender_key(self, session_id: str) -> str:
+        return f"lynk:sender:{session_id}"
+
+    def _get_sender_code_key(self, code: str) -> str:
+        return f"lynk:sender_code:{code}"
+
+    async def claim_sender_code(
+        self, code: str, session_id: str, ttl_seconds: int
+    ) -> bool:
+        """Takes the code for this session. False when another session holds it."""
+        client = await self.get_client()
+        key = self._get_sender_code_key(code)
+        try:
+            return bool(await client.set(key, session_id, nx=True, ex=ttl_seconds))
+        except Exception as e:
+            logger.error(f"Redis claim_sender_code failed: {e}")
+            raise ServiceUnavailableException("Failed to claim a session code")
+
+    async def get_sender_code(self, code: str) -> str | None:
+        """Returns the session id a code names, or None once it has expired."""
+        client = await self.get_client()
+        key = self._get_sender_code_key(code)
+        try:
+            return await client.get(key)
+        except Exception as e:
+            logger.error(f"Redis get_sender_code failed: {e}")
+            raise ServiceUnavailableException("Failed to look up a session code")
+
+    async def set_sender_session(self, session_id: str, data: dict, ttl_seconds: int) -> None:
+        client = await self.get_client()
+        key = self._get_sender_key(session_id)
+        try:
+            val = json.dumps(data)
+            await client.setex(key, ttl_seconds, val)
+        except Exception as e:
+            logger.error(f"Redis set_sender_session failed: {e}")
+            raise ServiceUnavailableException("Failed to save sender session")
+
+    async def get_sender_session(self, session_id: str) -> dict | None:
+        client = await self.get_client()
+        key = self._get_sender_key(session_id)
+        try:
+            val = await client.get(key)
+            if not val:
+                return None
+            return json.loads(val)
+        except Exception as e:
+            logger.error(f"Redis get_sender_session failed: {e}")
+            raise ServiceUnavailableException("Failed to retrieve sender session")
+
+    async def update_sender_session(self, session_id: str, data: dict) -> None:
+        client = await self.get_client()
+        key = self._get_sender_key(session_id)
+        try:
+            ttl = await client.ttl(key)
+            if ttl == -2:
+                raise TransferNotFoundException("Sender session not found or expired")
+            if ttl <= 0:
+                if ttl == -1:
+                    ttl = settings.SENDER_SESSION_LIFETIME_SECONDS
+                else:
+                    raise TransferNotFoundException("Sender session not found or expired")
+
+            val = json.dumps(data)
+            await client.setex(key, ttl, val)
+        except TransferNotFoundException:
+            raise
+        except Exception as e:
+            logger.error(f"Redis update_sender_session failed: {e}")
+            raise ServiceUnavailableException("Failed to update sender session")
+
+    async def delete_sender_session(self, session_id: str) -> None:
+        client = await self.get_client()
+        key = self._get_sender_key(session_id)
+        try:
+            await client.delete(key)
+        except Exception as e:
+            logger.error(f"Redis delete_sender_session failed: {e}")
+            raise ServiceUnavailableException("Failed to delete sender session")
+
     async def close_pool(self) -> None:
         if self.pool:
             await self.pool.disconnect()

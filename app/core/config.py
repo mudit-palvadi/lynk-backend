@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # How many unfinished creates one client address may hold at a time (#34).
     MAX_OPEN_RESERVATIONS_PER_CLIENT: int = 5
     RECEIVER_SESSION_LIFETIME_SECONDS: int = 600
+    # Sender-owned pairing sessions: the sender shows a code, the receiver
+    # types it, and the session lives long enough to upload first.
+    SENDER_SESSION_LIFETIME_SECONDS: int = 600
+    SENDER_CODE_LENGTH: int = 6
     UPLOAD_URL_LIFETIME_SECONDS: int = 900
     DOWNLOAD_URL_LIFETIME_SECONDS: int = 300
 

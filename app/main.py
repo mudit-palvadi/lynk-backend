@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.transfers import router as transfers_router
 from app.api.receiver import router as receiver_router
+from app.api.sender import router as sender_router
 from app.api.signaling import router as signaling_router
 from app.api.signaling import (
     set_access_validator,
@@ -111,6 +112,7 @@ register_exception_handlers(app)
 
 app.include_router(transfers_router, prefix="/api/v1")
 app.include_router(receiver_router, prefix="/api/v1")
+app.include_router(sender_router, prefix="/api/v1")
 app.include_router(signaling_router, prefix="/ws", tags=["signaling"])
 
 
