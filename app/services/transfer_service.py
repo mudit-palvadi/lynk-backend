@@ -50,9 +50,7 @@ class TransferService:
                     f"File '{file_name}' size must be a positive number of bytes"
                 )
             if size > settings.MAX_INDIVIDUAL_FILE_SIZE:
-                raise LimitExceededException(
-                    f"File '{file_name}' exceeds individual size limit"
-                )
+                raise LimitExceededException(f"File '{file_name}' exceeds individual size limit")
             total_size += size
 
             file_id = self._generate_id(8)
@@ -108,9 +106,12 @@ class TransferService:
             transfer_id, transfer.model_dump(), settings.TRANSFER_LIFETIME_SECONDS
         )
 
-        expires_timestamp = int(expires_at.timestamp())
+        # Reserve the declared size, but only for a couple of minutes: a
+        # create that never uploads must not hold capacity for the whole
+        # transfer lifetime (#34). Completing a file extends the hold.
+        reservation_until = current_time + settings.UNFILLED_RESERVATION_SECONDS
         await client.zadd(
-            "lynk:active_transfers", {f"{transfer_id}:{total_size}": expires_timestamp}
+            "lynk:active_transfers", {f"{transfer_id}:{total_size}": reservation_until}
         )
 
         upload_files = []
@@ -169,6 +170,18 @@ class TransferService:
             transfer.status = "ready"
 
         await self.redis.update_transfer(transfer_id, transfer.model_dump())
+
+        # A file really landed, so the declared size may hold capacity until
+        # the transfer expires (#34).
+        client = await self.redis.get_client()
+        await client.zadd(
+            "lynk:active_transfers",
+            {
+                f"{transfer_id}:{transfer.total_size}": int(
+                    datetime.fromisoformat(transfer.expires_at).timestamp()
+                )
+            },
+        )
 
         return {
             "file_id": file_id,

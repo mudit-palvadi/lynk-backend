@@ -24,6 +24,10 @@ class Settings(BaseSettings):
 
     TRANSFER_LIFETIME_SECONDS: int = 600
     EXTENDED_TRANSFER_LIFETIME_SECONDS: int = 1800
+    # How long a transfer's declared size is reserved against the storage
+    # capacity before anything has been uploaded (#34). A create that never
+    # uploads must not hold capacity for the whole transfer lifetime.
+    UNFILLED_RESERVATION_SECONDS: int = 120
     RECEIVER_SESSION_LIFETIME_SECONDS: int = 600
     UPLOAD_URL_LIFETIME_SECONDS: int = 900
     DOWNLOAD_URL_LIFETIME_SECONDS: int = 300
