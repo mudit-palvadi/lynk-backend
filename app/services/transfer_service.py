@@ -29,6 +29,13 @@ class TransferService:
         if not secrets_match(presented, expected):
             raise UnauthorizedException()
 
+    async def _release_open_slot(self, client_ip: str | None, transfer_id: str) -> None:
+        """Drop a transfer from its address's open-reservation set (#34)."""
+        if not client_ip:
+            return
+        client = await self.redis.get_client()
+        await client.zrem(f"lynk:open:{client_ip}", transfer_id)
+
     async def create_transfer(
         self, files_input: list[dict], *, client_ip: str | None = None
     ) -> dict:
@@ -162,7 +169,12 @@ class TransferService:
         }
 
     async def complete_file(
-        self, transfer_id: str, file_id: str, *, sender_secret: str | None
+        self,
+        transfer_id: str,
+        file_id: str,
+        *,
+        sender_secret: str | None,
+        client_ip: str | None = None,
     ) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
@@ -194,7 +206,8 @@ class TransferService:
         await self.redis.update_transfer(transfer_id, transfer.model_dump())
 
         # A file really landed, so the declared size may hold capacity until
-        # the transfer expires (#34).
+        # the transfer expires (#34), and the address stops carrying an
+        # unfinished reservation for it.
         client = await self.redis.get_client()
         await client.zadd(
             "lynk:active_transfers",
@@ -204,6 +217,7 @@ class TransferService:
                 )
             },
         )
+        await self._release_open_slot(client_ip, transfer_id)
 
         return {
             "file_id": file_id,
@@ -316,7 +330,13 @@ class TransferService:
 
         return {"files": download_files}
 
-    async def cancel_transfer(self, transfer_id: str, *, sender_secret: str | None) -> None:
+    async def cancel_transfer(
+        self,
+        transfer_id: str,
+        *,
+        sender_secret: str | None,
+        client_ip: str | None = None,
+    ) -> None:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
             return
@@ -327,6 +347,7 @@ class TransferService:
 
         client = await self.redis.get_client()
         await client.zrem("lynk:active_transfers", f"{transfer_id}:{transfer.total_size}")
+        await self._release_open_slot(client_ip, transfer_id)
 
         file_ids = [f.file_id for f in transfer.files]
         await self.r2.delete_objects(transfer_id, file_ids)

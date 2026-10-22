@@ -41,13 +41,17 @@ async def create_transfer(
 
 @router.post("/{transfer_id}/files/{file_id}/complete", response_model=FileCompleteResponse)
 async def complete_file(
+    request: Request,
     transfer_id: str,
     file_id: str,
     service: TransferService = Depends(get_transfer_service),
     x_lynk_sender_secret: str | None = Header(default=None),
 ):
     return await service.complete_file(
-        transfer_id, file_id, sender_secret=x_lynk_sender_secret
+        transfer_id,
+        file_id,
+        sender_secret=x_lynk_sender_secret,
+        client_ip=resolve_client_ip(request),
     )
 
 
@@ -87,11 +91,16 @@ async def extend_transfer(
 
 @router.delete("/{transfer_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_transfer(
+    request: Request,
     transfer_id: str,
     service: TransferService = Depends(get_transfer_service),
     x_lynk_sender_secret: str | None = Header(default=None),
 ):
-    await service.cancel_transfer(transfer_id, sender_secret=x_lynk_sender_secret)
+    await service.cancel_transfer(
+        transfer_id,
+        sender_secret=x_lynk_sender_secret,
+        client_ip=resolve_client_ip(request),
+    )
 
 
 @router.get(
