@@ -15,7 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.api import signaling as signaling_module
 from app.api.signaling import set_access_validator
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.main import _signaling_access_valid, app
 from app.services.redis_service import redis_service
 
@@ -145,4 +145,8 @@ class TestLifespanWiring:
         with patch.object(settings, "SIGNALING_REQUIRE_ACCESS", True):
             with TestClient(app):
                 assert signaling_module._access_validator is not None
+
+    def test_the_room_token_is_required_by_default(self):
+        # #44: a deploy that omits the variable must not drop the check.
+        assert Settings.model_fields["SIGNALING_REQUIRE_ACCESS"].default is True
 

@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
+COMPOSE = REPO_ROOT / "docker-compose.yml"
 REQUIREMENTS = REPO_ROOT / "requirements.txt"
 REQUIREMENTS_DEV = REPO_ROOT / "requirements-dev.txt"
 
@@ -25,6 +26,11 @@ REQUIREMENTS_DEV = REPO_ROOT / "requirements-dev.txt"
 @pytest.fixture(scope="module")
 def dockerfile_text() -> str:
     return DOCKERFILE.read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def compose_text() -> str:
+    return COMPOSE.read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +54,16 @@ def test_the_websocket_message_size_is_capped(dockerfile_text: str) -> None:
     client make the process hold a huge frame.
     """
     assert '"--ws-max-size", "65536"' in dockerfile_text
+
+
+def test_the_compose_deploy_requires_the_room_token(compose_text: str) -> None:
+    """#44: the VM runs compose, so the check is pinned here as well.
+
+    ``.env`` is not in the repository; without this line a fresh checkout
+    would rely on the class default alone and a stray ``false`` in the
+    production env file would turn the check off silently.
+    """
+    assert "SIGNALING_REQUIRE_ACCESS=true" in compose_text
 
 
 def test_dockerignore_exists() -> None:

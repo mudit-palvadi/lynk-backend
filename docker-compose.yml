@@ -16,6 +16,8 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - WEB_CONCURRENCY=1
+      # Pinned here so the deploy cannot come up without the room token check.
+      - SIGNALING_REQUIRE_ACCESS=true
     env_file:
       - .env
     depends_on:
