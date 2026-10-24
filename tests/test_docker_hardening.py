@@ -56,6 +56,15 @@ def test_the_websocket_message_size_is_capped(dockerfile_text: str) -> None:
     assert '"--ws-max-size", "65536"' in dockerfile_text
 
 
+def test_the_compose_websocket_message_size_is_capped(compose_text: str) -> None:
+    """#42: the VM runs compose, not the Dockerfile's CMD.
+
+    Without its own flag the compose command would fall back to uvicorn's
+    16 MiB default and lose the transport backstop.
+    """
+    assert "--ws-max-size 65536" in compose_text
+
+
 def test_the_compose_deploy_requires_the_room_token(compose_text: str) -> None:
     """#44: the VM runs compose, so the check is pinned here as well.
 

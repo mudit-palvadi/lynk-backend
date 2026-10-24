@@ -10,7 +10,9 @@ services:
     restart: always
     # MUST stay single-worker: WebRTC signaling rooms are process-local.
     # Scaling out requires Redis-backed fan-out (see app/api/signaling.py).
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # --ws-max-size is the transport backstop under the relay's 16 KB frame
+    # limit; uvicorn's default is 16 MiB (#42).
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --ws-max-size 65536
     ports:
       - "8000:8000"
     environment:
