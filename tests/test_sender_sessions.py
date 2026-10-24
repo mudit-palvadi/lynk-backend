@@ -200,6 +200,16 @@ class TestAttachTransfer:
         view = await _service().get_sender_session(created["session_id"])
         assert view["transfer_id"] == "transfer-1"
 
+    async def test_the_mode_travels_with_the_key(self, fake_redis):
+        created = await self._joined()
+
+        await _service().attach_transfer(
+            created["session_id"], "transfer-1", WRAPPED, "p2p"
+        )
+        collected = await _service().collect_key(created["session_id"])
+
+        assert collected["mode"] == "p2p"
+
     async def test_attaching_without_a_receiver_is_refused(self, fake_redis):
         created = await _service().create_sender_session()
 
@@ -226,6 +236,7 @@ class TestCollectKey:
         first = await _service().collect_key(created["session_id"])
         assert first["transfer_id"] == "transfer-1"
         assert first["wrapped_key"] == WRAPPED
+        assert first["mode"] == "cloud"
 
         with pytest.raises(TransferNotReadyException):
             await _service().collect_key(created["session_id"])

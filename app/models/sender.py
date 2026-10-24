@@ -11,6 +11,9 @@ class SenderSessionModel(BaseModel):
     # Receiver's ephemeral public key, so the sender can seal the AES key to it.
     receiver_pk: str | None = None
     transfer_id: str | None = None
+    # How the sender shipped the files: "cloud" went to storage first, "p2p"
+    # is streaming straight from the sender's device.
+    mode: str = "cloud"
     # Opaque client-side ECDH-sealed ciphertext. Never a plaintext AES key.
     wrapped_key: str | None = None
     created_at: str

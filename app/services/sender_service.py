@@ -112,7 +112,11 @@ class SenderService:
         }
 
     async def attach_transfer(
-        self, session_id: str, transfer_id: str, wrapped_key: str
+        self,
+        session_id: str,
+        transfer_id: str,
+        wrapped_key: str,
+        mode: str = "cloud",
     ) -> dict:
         data = await self.redis.get_sender_session(session_id)
         if not data:
@@ -124,6 +128,7 @@ class SenderService:
 
         session.transfer_id = transfer_id
         session.wrapped_key = wrapped_key
+        session.mode = mode
         session.status = "attached"
         await self.redis.update_sender_session(session_id, session.model_dump())
 
@@ -145,6 +150,7 @@ class SenderService:
         res = {
             "transfer_id": session.transfer_id,
             "wrapped_key": session.wrapped_key,
+            "mode": session.mode,
             "expires_in": await self._ttl(session_id),
         }
 

@@ -61,7 +61,7 @@ async def attach_transfer(
     service: SenderService = Depends(get_sender_service),
 ):
     return await service.attach_transfer(
-        session_id, payload.transfer_id, payload.wrapped_key
+        session_id, payload.transfer_id, payload.wrapped_key, payload.mode
     )
 
 
