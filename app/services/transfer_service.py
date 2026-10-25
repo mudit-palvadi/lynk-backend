@@ -225,17 +225,18 @@ class TransferService:
             "transfer_status": transfer.status,
         }
 
-    async def transfer_exists(self, transfer_id: str) -> bool:
-        """Whether a transfer with this id is still live.
+    async def require_access(self, transfer_id: str, *, access_token: str | None) -> None:
+        """Refuse TURN credentials for an unknown id or a wrong token (#47).
 
-        The id is not a credential: metadata, download, extend and cancel all
-        require the access token, and the signalling room asks for it in its
-        first frame (#32). The one caller still allowed to present the id alone
-        is the TURN handshake, because the client collects credentials before
-        the room is open and a TURN credential only relays bytes between the
-        two peers of that room.
+        The id alone used to be enough here, because the client collects
+        credentials before the signaling room opens. That let anyone who
+        guessed an id spend the relay's bandwidth, so the check now matches
+        the other transfer routes: unknown id -> 404, token -> 401.
         """
-        return await self.redis.get_transfer(transfer_id) is not None
+        data = await self.redis.get_transfer(transfer_id)
+        if not data:
+            raise TransferNotFoundException()
+        self._require_secret(access_token, data.get("access_token", ""))
 
     async def get_transfer_metadata(self, transfer_id: str, *, access_token: str | None) -> dict:
         data = await self.redis.get_transfer(transfer_id)

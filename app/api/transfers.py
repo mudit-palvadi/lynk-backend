@@ -14,7 +14,6 @@ from app.services.transfer_service import TransferService
 
 from app.core.security import RateLimiter, resolve_client_ip
 from app.core.config import settings
-from app.core.exceptions import TransferNotFoundException
 from app.services.turn_service import generate_turn_credentials
 
 router = APIRouter(prefix="/transfers", tags=["transfers"])
@@ -112,20 +111,20 @@ async def cancel_transfer(
 async def get_turn_credentials(
     transfer_id: str,
     service: TransferService = Depends(get_transfer_service),
+    x_lynk_access_token: str | None = Header(default=None),
 ):
     """Short-lived TURN relay credentials for the P2P ICE ladder.
 
     Returns `enabled: false` when TURN is not configured so clients degrade
     gracefully to STUN-only + R2 fallback.
 
-    Credentials are only minted for a transfer that actually exists
-    (POTENTIAL_ISSUES #25): otherwise anybody could ask the relay for
-    credentials for an id they made up.
+    Credentials are only minted for a live transfer whose caller presents its
+    access token (POTENTIAL_ISSUES #25, #47): an id alone must not be enough to
+    spend the relay's bandwidth.
     """
     if not settings.TURN_URLS or not settings.TURN_SECRET:
         return {"enabled": False, "urls": [], "username": "", "credential": "", "ttl": 0}
-    if not await service.transfer_exists(transfer_id):
-        raise TransferNotFoundException()
+    await service.require_access(transfer_id, access_token=x_lynk_access_token)
     creds = generate_turn_credentials(
         secret=settings.TURN_SECRET,
         session_id=transfer_id,
