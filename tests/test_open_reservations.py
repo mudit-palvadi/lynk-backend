@@ -120,8 +120,10 @@ class TestSlotRelease:
         fresh = await svc.create_transfer(_payload(), client_ip=ADDRESS)
         assert fresh["transfer_id"]
 
-    async def test_cancelling_frees_the_slot(self, fake_redis):
+    async def test_cancelling_frees_the_slot(self, fake_redis, monkeypatch):
         svc = _service()
+        delete_objects = AsyncMock()
+        monkeypatch.setattr(svc.r2, "delete_objects", delete_objects)
         created = await _fill(svc)
 
         first = created[0]
@@ -129,6 +131,9 @@ class TestSlotRelease:
             first["transfer_id"],
             sender_secret=first["sender_secret"],
             client_ip=ADDRESS,
+        )
+        delete_objects.assert_awaited_once_with(
+            first["transfer_id"], [first["files"][0]["file_id"]]
         )
 
         assert await fake_redis.zcard(f"lynk:open:{ADDRESS}") == (
