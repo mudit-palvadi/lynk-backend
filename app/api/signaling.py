@@ -43,6 +43,8 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.core.security import resolve_client_address
+
 router = APIRouter(tags=["signaling"])
 
 rooms: dict[str, dict[str, Any]] = {}
@@ -70,7 +72,9 @@ MAX_FRAME_BYTES = 16 * 1024
 #
 # Each socket costs a room slot, a history buffer and a task, and the relay
 # accepts any id as a room, so one address must not be able to hold an
-# unbounded number of them.
+# unbounded number of them. The address is the real client address: behind
+# Cloudflare every socket shares one edge address, so #43 resolves it the same
+# way the HTTP limiter does.
 _MAX_SOCKETS_PER_HOST = 10
 
 _open_by_host: dict[str, int] = {}
@@ -242,7 +246,10 @@ def stop_idle_sweeper() -> None:
 async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None = None) -> None:
     await websocket.accept()
 
-    host = websocket.client.host if websocket.client else "unknown"
+    host = resolve_client_address(
+        websocket.client.host if websocket.client else None,
+        websocket.headers.get("CF-Connecting-IP"),
+    )
     if not _open_host_connection(host):
         await websocket.send_text(json.dumps({"type": "error", "msg": "too many connections"}))
         await websocket.close()

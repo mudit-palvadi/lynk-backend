@@ -52,25 +52,29 @@ def _is_cloudflare_address(ip: str) -> bool:
     return False
 
 
-def resolve_client_ip(request: Request) -> str:
-    """Return the address to rate-limit against.
+def resolve_client_address(peer: str | None, connecting_ip: str | None) -> str:
+    """Return the address to attribute a connection to.
 
     The API is served through Cloudflare, so the ASGI peer is a Cloudflare
     edge address and every user would otherwise share a single bucket. The
     `CF-Connecting-IP` header carries the original client address, and
     Cloudflare overwrites it on every request, so it is only trusted when the
-    request actually arrived from a Cloudflare address. A request that reaches
-    the origin directly (an exposed port) has no such guarantee, so it is
-    limited by the peer address instead.
+    connection actually arrived from a Cloudflare address. A connection that
+    reaches the origin directly (an exposed port) has no such guarantee, so it
+    is attributed to the peer instead.
     """
-    peer = request.client.host if request.client else ""
-
     if peer and _is_cloudflare_address(peer):
-        forwarded = request.headers.get("CF-Connecting-IP", "").strip()
+        forwarded = (connecting_ip or "").strip()
         if forwarded:
             return forwarded
 
     return peer or "unknown"
+
+
+def resolve_client_ip(request: Request) -> str:
+    """Return the address to rate-limit against (see resolve_client_address)."""
+    peer = request.client.host if request.client else ""
+    return resolve_client_address(peer, request.headers.get("CF-Connecting-IP"))
 
 
 class RateLimiter:
