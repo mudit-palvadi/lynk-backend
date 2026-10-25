@@ -6,6 +6,7 @@ unique while it lives and must expire with the session it points at.
 """
 
 import re
+from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
 import pytest
@@ -240,6 +241,53 @@ class TestCollectKey:
 
         with pytest.raises(TransferNotReadyException):
             await _service().collect_key(created["session_id"])
+
+    @pytest.mark.parametrize(
+        ("status", "expected_mode"),
+        [("ready", "cloud"), ("uploading", "p2p"), ("cancelled", "p2p")],
+    )
+    async def test_cloud_readiness_overrides_a_stale_p2p_hint(
+        self, fake_redis, status, expected_mode
+    ):
+        created = await self._attached()
+        await _service().attach_transfer(
+            created["session_id"], "transfer-1", WRAPPED, "p2p"
+        )
+        await redis_service.set_transfer(
+            "transfer-1",
+            {"transfer_id": "transfer-1", "status": status},
+            300,
+        )
+        session_key = f"lynk:sender:{created['session_id']}"
+        ttl_before = await fake_redis.ttl(session_key)
+
+        collected = await _service().collect_key(created["session_id"])
+
+        assert collected["mode"] == expected_mode
+        assert collected["transfer_id"] == "transfer-1"
+        assert collected["wrapped_key"] == WRAPPED
+        assert await fake_redis.ttl(session_key) <= ttl_before
+        with pytest.raises(TransferNotReadyException):
+            await _service().collect_key(created["session_id"])
+
+    async def test_a_failed_readiness_lookup_does_not_consume_the_key(
+        self, fake_redis, monkeypatch
+    ):
+        created = await self._attached()
+        await _service().attach_transfer(
+            created["session_id"], "transfer-1", WRAPPED, "p2p"
+        )
+        monkeypatch.setattr(
+            redis_service,
+            "get_transfer",
+            AsyncMock(side_effect=ServiceUnavailableException("Redis unavailable")),
+        )
+
+        with pytest.raises(ServiceUnavailableException):
+            await _service().collect_key(created["session_id"])
+
+        stored = await redis_service.get_sender_session(created["session_id"])
+        assert stored["wrapped_key"] == WRAPPED
 
     async def test_collecting_before_the_wrap_is_refused(self, fake_redis):
         created = await _service().create_sender_session()

@@ -147,10 +147,18 @@ class SenderService:
         if session.status != "attached" or not session.wrapped_key:
             raise TransferNotReadyException("The sender has not wrapped the key yet")
 
+        # The code can outlive a direct attempt. Only verified cloud completion
+        # overrides its original hint; "uploading" also describes live P2P.
+        mode = session.mode
+        if mode == "p2p":
+            transfer = await self.redis.get_transfer(session.transfer_id)
+            if transfer and transfer.get("status") == "ready":
+                mode = "cloud"
+
         res = {
             "transfer_id": session.transfer_id,
             "wrapped_key": session.wrapped_key,
-            "mode": session.mode,
+            "mode": mode,
             "expires_in": await self._ttl(session_id),
         }
 
