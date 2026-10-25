@@ -48,4 +48,5 @@ jobs:
       - name: Test
         # No Redis is needed: tests/conftest.py installs a Redis double, so the
         # suite never reaches for a real server.
-        run: pytest -q
+        # Module invocation keeps the repository root on Python's import path.
+        run: python -m pytest -q
