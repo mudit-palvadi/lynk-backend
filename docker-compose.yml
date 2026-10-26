@@ -2,6 +2,10 @@ services:
   redis:
     image: redis:7-alpine
     restart: always
+    # Bounded so a flood of writes is refused by Redis instead of taking the
+    # VM's memory (#51). noeviction: dropping a live transfer or key silently
+    # would be worse than a failed write.
+    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction
     volumes:
       - redis_data:/data
 

@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     SENDER_SESSION_LIFETIME_SECONDS: int = 600
     SENDER_CODE_LENGTH: int = 6
     UPLOAD_URL_LIFETIME_SECONDS: int = 900
+    # File bytes go straight to R2, so no API request carries more than a few
+    # kilobytes of JSON. A larger body is refused before it is parsed (#51).
+    MAX_REQUEST_BODY_BYTES: int = 65536
     DOWNLOAD_URL_LIFETIME_SECONDS: int = 300
 
     # TURN relay (P2P fallback path). Empty = disabled; clients degrade to

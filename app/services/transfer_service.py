@@ -16,6 +16,8 @@ from app.models.transfer import TransferModel, FileItemModel
 from app.services.redis_service import RedisService
 from app.services.r2_service import R2Service
 
+ACTIVE_TRANSFERS_KEY = "lynk:active_transfers"
+
 
 class TransferService:
     def __init__(self, redis_service: RedisService, r2_service: R2Service) -> None:
@@ -28,6 +30,27 @@ class TransferService:
     def _require_secret(self, presented: str | None, expected: str) -> None:
         if not secrets_match(presented, expected):
             raise UnauthorizedException()
+
+    @staticmethod
+    def _landed_bytes(transfer: TransferModel) -> int:
+        return sum(f.file_size for f in transfer.files if f.status == "uploaded")
+
+    async def _hold_landed_bytes(
+        self, transfer_id: str, before: int, after: int, until: int
+    ) -> None:
+        """Hold capacity for the bytes that are really in storage (#50).
+
+        Only those bytes may outlive the short create-time reservation. Holding
+        the declared size instead let one address lock the whole cap with a
+        single 1-byte file, or with an extend and no upload at all. While the
+        reservation is still running both entries count, which only overstates
+        use. Once every file has landed the two entries are the same member.
+        """
+        client = await self.redis.get_client()
+        if before and before != after:
+            await client.zrem(ACTIVE_TRANSFERS_KEY, f"{transfer_id}:{before}")
+        if after:
+            await client.zadd(ACTIVE_TRANSFERS_KEY, {f"{transfer_id}:{after}": until})
 
     async def _release_open_slot(self, client_ip: str | None, transfer_id: str) -> None:
         """Drop a transfer from its address's open-reservation set (#34)."""
@@ -93,8 +116,8 @@ class TransferService:
                     "Finish or cancel one and try again."
                 )
 
-        await client.zremrangebyscore("lynk:active_transfers", "-inf", current_time)
-        active_items = await client.zrange("lynk:active_transfers", 0, -1)
+        await client.zremrangebyscore(ACTIVE_TRANSFERS_KEY, "-inf", current_time)
+        active_items = await client.zrange(ACTIVE_TRANSFERS_KEY, 0, -1)
         current_active_size = 0
         for item in active_items:
             try:
@@ -132,10 +155,10 @@ class TransferService:
 
         # Reserve the declared size, but only for a couple of minutes: a
         # create that never uploads must not hold capacity for the whole
-        # transfer lifetime (#34). Completing a file extends the hold.
+        # transfer lifetime (#34). After that only landed bytes are held (#50).
         reservation_until = current_time + settings.UNFILLED_RESERVATION_SECONDS
         await client.zadd(
-            "lynk:active_transfers", {f"{transfer_id}:{total_size}": reservation_until}
+            ACTIVE_TRANSFERS_KEY, {f"{transfer_id}:{total_size}": reservation_until}
         )
         if open_key:
             await client.zadd(open_key, {transfer_id: reservation_until})
@@ -198,6 +221,7 @@ class TransferService:
                 "Uploaded object size does not match the declared file size"
             )
 
+        landed_before = self._landed_bytes(transfer)
         target_file.status = "uploaded"
 
         if all(f.status == "uploaded" for f in transfer.files):
@@ -205,19 +229,17 @@ class TransferService:
 
         await self.redis.update_transfer(transfer_id, transfer.model_dump())
 
-        # A file really landed, so the declared size may hold capacity until
-        # the transfer expires (#34), and the address stops carrying an
-        # unfinished reservation for it.
-        client = await self.redis.get_client()
-        await client.zadd(
-            "lynk:active_transfers",
-            {
-                f"{transfer_id}:{transfer.total_size}": int(
-                    datetime.fromisoformat(transfer.expires_at).timestamp()
-                )
-            },
+        await self._hold_landed_bytes(
+            transfer_id,
+            landed_before,
+            self._landed_bytes(transfer),
+            int(datetime.fromisoformat(transfer.expires_at).timestamp()),
         )
-        await self._release_open_slot(client_ip, transfer_id)
+        # A partly uploaded transfer keeps its open slot until the reservation
+        # lapses, so completing one small file cannot free the slot for the
+        # next create (#50).
+        if transfer.status == "ready":
+            await self._release_open_slot(client_ip, transfer_id)
 
         return {
             "file_id": file_id,
@@ -284,10 +306,11 @@ class TransferService:
             transfer_id, transfer.model_dump(), settings.EXTENDED_TRANSFER_LIFETIME_SECONDS
         )
 
-        client = await self.redis.get_client()
-        await client.zadd(
-            "lynk:active_transfers",
-            {f"{transfer_id}:{transfer.total_size}": int(new_expires_at.timestamp())},
+        # The record lives longer, but capacity is held only for what is in
+        # storage: extending an empty transfer must not hold its declared size.
+        landed = self._landed_bytes(transfer)
+        await self._hold_landed_bytes(
+            transfer_id, landed, landed, int(new_expires_at.timestamp())
         )
 
         return {
@@ -347,7 +370,11 @@ class TransferService:
         await self.redis.delete_transfer(transfer_id)
 
         client = await self.redis.get_client()
-        await client.zrem("lynk:active_transfers", f"{transfer_id}:{transfer.total_size}")
+        await client.zrem(
+            ACTIVE_TRANSFERS_KEY,
+            f"{transfer_id}:{transfer.total_size}",
+            f"{transfer_id}:{self._landed_bytes(transfer)}",
+        )
         await self._release_open_slot(client_ip, transfer_id)
 
         file_ids = [f.file_id for f in transfer.files]

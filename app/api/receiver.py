@@ -35,7 +35,13 @@ async def get_receiver_session(
     return await service.get_receiver_session(session_id)
 
 
-@router.post("/{session_id}/attach-transfer", status_code=status.HTTP_200_OK)
+@router.post(
+    "/{session_id}/attach-transfer",
+    status_code=status.HTTP_200_OK,
+    dependencies=[
+        Depends(RateLimiter(limit=10, window_seconds=60, bucket="receiver-session-attach"))
+    ],
+)
 async def attach_transfer(
     session_id: str,
     payload: AttachTransferRequest,

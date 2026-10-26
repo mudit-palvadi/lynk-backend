@@ -13,6 +13,7 @@ from app.api.signaling import (
     start_idle_sweeper,
     stop_idle_sweeper,
 )
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.exceptions import register_exception_handlers
 from app.core.config import settings
 from app.core.security import secrets_match
@@ -95,6 +96,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Added before CORS so CORS wraps it and a browser can read the 413.
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.MAX_REQUEST_BODY_BYTES)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,

@@ -243,6 +243,7 @@ def test_limited_routes_use_explicit_buckets(monkeypatch) -> None:
     client.post("/api/v1/transfers/11111111-1111-1111-1111-111111111111/extend")
     client.get("/api/v1/transfers/11111111-1111-1111-1111-111111111111/turn-credentials")
     client.post("/api/v1/receiver-sessions")
+    client.post("/api/v1/receiver-sessions/session-1/attach-transfer")
 
     buckets = [key.split(":")[2] for key in fake.incr_keys]
 
@@ -251,6 +252,7 @@ def test_limited_routes_use_explicit_buckets(monkeypatch) -> None:
         "transfer-extend",
         "transfer-turn-credentials",
         "receiver-session-create",
+        "receiver-session-attach",
     ]
 
 

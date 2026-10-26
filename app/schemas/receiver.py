@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ReceiverSessionCreateResponse(BaseModel):
@@ -16,7 +16,9 @@ class ReceiverSessionResponse(BaseModel):
 
 
 class AttachTransferRequest(BaseModel):
-    transfer_id: str
+    # Both values are stored in Redis as they arrive, so they are bounded like
+    # the sender-session attach (#51).
+    transfer_id: str = Field(min_length=1, max_length=64)
     # Opaque ECDH-sealed ciphertext of the AES key, wrapped client-side to the
     # receiver's ephemeral public key. The backend never sees the plaintext.
-    wrapped_key: str | None = None
+    wrapped_key: str | None = Field(default=None, max_length=1000)
