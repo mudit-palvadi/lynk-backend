@@ -270,6 +270,7 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
         await websocket.close()
         return
 
+    member_room: dict[str, Any] | None = None
     try:
         if _session_validator is not None and not await _session_validator(session_id):
             await websocket.send_text(json.dumps({"type": "error", "msg": "unknown session"}))
@@ -299,6 +300,7 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
             if _should_replay(entry_role, role):
                 await websocket.send_text(raw)
         room["members"].append({"ws": websocket, "role": role})
+        member_room = room
         _touch(room)
 
         try:
@@ -353,6 +355,21 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
 
         except WebSocketDisconnect:
             _prune_member(room, websocket)
+            member_room = None
             _touch(room)
+        except Exception:
+            _prune_member(room, websocket)
+            member_room = None
+            _touch(room)
+            try:
+                await websocket.close()
+            except Exception:
+                pass
     finally:
+        # Any exit other than a clean disconnect used to leave the socket in
+        # the member list. An occupied room is never idle, so that ghost
+        # stayed until the process restarted.
+        if member_room is not None:
+            _prune_member(member_room, websocket)
+            _touch(member_room)
         _close_host_connection(host)

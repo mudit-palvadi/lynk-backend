@@ -207,3 +207,20 @@ class TestHardening:
             loop.close()
         assert failed is False
         assert delivered is True
+
+
+def test_a_binary_frame_does_not_keep_its_seat(client):
+    session = "binary-ghost"
+    signaling.rooms.pop(session, None)
+    with client.websocket_connect(f"/ws/signaling/{session}") as sock:
+        sock.send_bytes(b"\x00\x01")
+        with pytest.raises(Exception):
+            sock.receive_text()
+
+    room = signaling.rooms.get(session)
+    assert room is None or room["members"] == []
+
+    with client.websocket_connect(f"/ws/signaling/{session}") as first:
+        with client.websocket_connect(f"/ws/signaling/{session}") as second:
+            first.send_json({"type": "offer", "sdp": "still-open"})
+            assert second.receive_json() == {"type": "offer", "sdp": "still-open"}
