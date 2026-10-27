@@ -1,4 +1,5 @@
 # Redis service placeholder
+import asyncio
 import json
 import logging
 import redis.asyncio as aioredis
@@ -28,6 +29,51 @@ class RedisService:
         if not self.pool:
             raise ServiceUnavailableException("Redis connection pool is not initialized")
         return aioredis.Redis(connection_pool=self.pool)
+
+    async def mutate_json(
+        self,
+        key: str,
+        mutate,
+        *,
+        ttl_seconds: int | None = None,
+    ) -> dict | None:
+        """Change one JSON value without dropping a concurrent edit.
+
+        A short exclusive lock makes two writers apply in order. Each one
+        reads the value the previous writer stored, so a file-status update
+        and a lifetime extension both survive.
+        """
+        client = await self.get_client()
+        lock_key = f"{key}:lock"
+        acquired = False
+        try:
+            for _ in range(40):
+                acquired = bool(await client.set(lock_key, "1", nx=True, px=3000))
+                if acquired:
+                    break
+                await asyncio.sleep(0.02)
+            if not acquired:
+                raise ServiceUnavailableException("Failed to update the record")
+
+            raw = await client.get(key)
+            if not raw:
+                return None
+            updated = mutate(json.loads(raw))
+            if not isinstance(updated, dict):
+                raise ServiceUnavailableException("Failed to update the record")
+
+            payload = json.dumps(updated)
+            if ttl_seconds is None:
+                ttl = await client.ttl(key)
+                if ttl is None or ttl <= 0:
+                    raise TransferNotFoundException()
+                await client.set(key, payload, ex=int(ttl))
+            else:
+                await client.set(key, payload, ex=ttl_seconds)
+            return updated
+        finally:
+            if acquired:
+                await client.delete(lock_key)
 
     def _get_key(self, transfer_id: str) -> str:
         return f"lynk:transfer:{transfer_id}"
