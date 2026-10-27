@@ -17,6 +17,7 @@ import pytest
 
 import app.services.r2_service as r2_mod
 from app.core.config import settings
+from app.core.exceptions import LimitExceededException
 from app.services.r2_service import R2Service
 from app.services.redis_service import redis_service
 from app.services.transfer_service import TransferService
@@ -210,3 +211,33 @@ class TestOnlyLandedBytesOutliveTheReservation:
         await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
 
         assert await fake_redis.zrange(KEY, 0, -1) == []
+
+
+class TestCompleteRechecksTheCap:
+    async def test_a_late_upload_is_refused_once_the_reservation_is_gone(
+        self, fake_redis, monkeypatch
+    ):
+        _verify_as_declared(monkeypatch)
+        deleted = AsyncMock()
+        monkeypatch.setattr(r2_mod.R2Service, "delete_objects", deleted)
+        svc = TransferService(redis_service=redis_service, r2_service=R2Service())
+        created = await svc.create_transfer(_payload())
+        tid = created["transfer_id"]
+        await fake_redis.zrem(KEY, f"{tid}:4096")
+        # One member already fills the cap, so this upload has nowhere to land.
+        await fake_redis.zadd(
+            KEY,
+            {f"other:{settings.MAX_TOTAL_R2_CAP_BYTES}": int(time.time()) + 600},
+        )
+
+        with pytest.raises(LimitExceededException):
+            await svc.complete_file(
+                transfer_id=tid,
+                file_id=created["files"][0]["file_id"],
+                sender_secret=created["sender_secret"],
+            )
+
+        stored = await redis_service.get_transfer(tid)
+        assert stored["files"][0]["status"] != "uploaded"
+        assert stored["status"] != "ready"
+        deleted.assert_awaited()
