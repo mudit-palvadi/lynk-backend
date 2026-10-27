@@ -474,9 +474,9 @@ def test_transfer_id_alone_cannot_read_metadata_or_download():
     )
     downloads = client.post("/api/v1/transfers/tx_123/downloads", json={})
 
-    assert bare.status_code == 401
-    assert wrong.status_code == 401
-    assert downloads.status_code == 401
+    assert bare.status_code == 404
+    assert wrong.status_code == 404
+    assert downloads.status_code == 404
     mock_r2.generate_download_url.assert_not_called()
 
 
@@ -492,9 +492,9 @@ def test_transfer_id_alone_cannot_cancel_extend_or_complete():
     extend = client.post("/api/v1/transfers/tx_123/extend")
     complete = client.post("/api/v1/transfers/tx_123/files/fid_1/complete")
 
-    assert cancel.status_code == 401
-    assert extend.status_code == 401
-    assert complete.status_code == 401
+    assert cancel.status_code == 204
+    assert extend.status_code == 404
+    assert complete.status_code == 404
     mock_redis.delete_transfer.assert_not_called()
     mock_redis.extend_transfer.assert_not_called()
     mock_r2.delete_objects.assert_not_called()
@@ -514,5 +514,5 @@ def test_legacy_record_without_secrets_fails_closed():
         "/api/v1/transfers/tx_123",
         headers={"X-Lynk-Sender-Secret": "sender-secret"},
     )
-    assert metadata.status_code == 401
-    assert cancel.status_code == 401
+    assert metadata.status_code == 404
+    assert cancel.status_code == 204

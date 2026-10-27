@@ -8,7 +8,6 @@ from app.core.exceptions import (
     TransferNotFoundException,
     TransferNotReadyException,
     InvalidInputException,
-    UnauthorizedException,
 )
 from app.core.security import secrets_match
 from app.core.file_names import validate_file_name
@@ -28,8 +27,13 @@ class TransferService:
         return secrets.token_urlsafe(length)[:length]
 
     def _require_secret(self, presented: str | None, expected: str) -> None:
+        """A wrong credential looks the same as a missing transfer.
+
+        Answering 401 only when the record exists would tell a guesser which
+        ids are live.
+        """
         if not secrets_match(presented, expected):
-            raise UnauthorizedException()
+            raise TransferNotFoundException()
 
     @staticmethod
     def _landed_bytes(transfer: TransferModel) -> int:
@@ -242,6 +246,7 @@ class TransferService:
     ) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
+            secrets_match(sender_secret, None)
             raise TransferNotFoundException()
 
         transfer = TransferModel.model_validate(data)
@@ -325,17 +330,19 @@ class TransferService:
 
         The id alone used to be enough here, because the client collects
         credentials before the signaling room opens. That let anyone who
-        guessed an id spend the relay's bandwidth, so the check now matches
-        the other transfer routes: unknown id -> 404, token -> 401.
+        guessed an id spend the relay's bandwidth. A wrong token is the same
+        404 as an unknown id, so the id is not an existence oracle.
         """
         data = await self.redis.get_transfer(transfer_id)
         if not data:
+            secrets_match(access_token, None)
             raise TransferNotFoundException()
         self._require_secret(access_token, data.get("access_token", ""))
 
     async def get_transfer_metadata(self, transfer_id: str, *, access_token: str | None) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
+            secrets_match(access_token, None)
             raise TransferNotFoundException()
 
         transfer = TransferModel.model_validate(data)
@@ -366,6 +373,7 @@ class TransferService:
     async def extend_transfer(self, transfer_id: str, *, sender_secret: str | None) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
+            secrets_match(sender_secret, None)
             raise TransferNotFoundException()
 
         transfer = TransferModel.model_validate(data)
@@ -413,6 +421,7 @@ class TransferService:
     ) -> dict:
         data = await self.redis.get_transfer(transfer_id)
         if not data:
+            secrets_match(access_token, None)
             raise TransferNotFoundException()
 
         transfer = TransferModel.model_validate(data)
@@ -447,11 +456,14 @@ class TransferService:
         client_ip: str | None = None,
     ) -> None:
         data = await self.redis.get_transfer(transfer_id)
-        if not data:
+        transfer = TransferModel.model_validate(data) if data else None
+        # A wrong secret answers the same 204 as an unknown id, and deletes
+        # nothing. The comparison still runs when the record is missing.
+        matched = secrets_match(
+            sender_secret, transfer.sender_secret if transfer is not None else None
+        )
+        if transfer is None or not matched:
             return
-
-        transfer = TransferModel.model_validate(data)
-        self._require_secret(sender_secret, transfer.sender_secret)
         await self.redis.delete_transfer(transfer_id)
 
         client = await self.redis.get_client()

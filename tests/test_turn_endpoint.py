@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.exceptions import TransferNotFoundException, UnauthorizedException
+from app.core.exceptions import TransferNotFoundException
 from app.main import app
 from app.services.redis_service import redis_service
 from app.services.transfer_service import TransferService
@@ -71,13 +71,13 @@ class TestTurnCredentialsEndpoint:
     def test_a_bad_token_gets_no_credentials(self, client):
         with patch("app.api.transfers.settings") as mock_settings, patch(
             "app.services.transfer_service.TransferService.require_access",
-            new=AsyncMock(side_effect=UnauthorizedException()),
+            new=AsyncMock(side_effect=TransferNotFoundException()),
         ):
             mock_settings.TURN_URLS = "turn:turn.lynkshare.app:3478"
             mock_settings.TURN_SECRET = "endpoint-secret"
             resp = client.get("/api/v1/transfers/some-id/turn-credentials")
 
-        assert resp.status_code == 401
+        assert resp.status_code == 404
         assert "username" not in resp.text
         assert "turn:" not in resp.text
 
@@ -106,9 +106,9 @@ class TestRequireAccess:
             new=AsyncMock(return_value={"access_token": "tok"}),
         ):
             service = self._service()
-            with pytest.raises(UnauthorizedException):
+            with pytest.raises(TransferNotFoundException):
                 await service.require_access("t1", access_token="nope")
-            with pytest.raises(UnauthorizedException):
+            with pytest.raises(TransferNotFoundException):
                 await service.require_access("t1", access_token=None)
 
     @pytest.mark.anyio
