@@ -188,6 +188,29 @@ class RedisService:
             logger.error(f"Redis claim_sender_code failed: {e}")
             raise ServiceUnavailableException("Failed to claim a session code")
 
+    async def claim_sender_receiver(
+        self, session_id: str, receiver_pk: str, ttl_seconds: int
+    ) -> str:
+        """The first public key claims the session. Later keys cannot replace it.
+
+        Returns ``claimed`` for the first key, ``same`` when that key joins
+        again, and ``other`` when a different key tries to take the session.
+        """
+        client = await self.get_client()
+        key = f"lynk:sender_receiver:{session_id}"
+        try:
+            if ttl_seconds <= 0:
+                return "other"
+            if await client.set(key, receiver_pk, nx=True, ex=ttl_seconds):
+                return "claimed"
+            current = await client.get(key)
+            if current == receiver_pk:
+                return "same"
+            return "other"
+        except Exception as e:
+            logger.error(f"Redis claim_sender_receiver failed: {e}")
+            raise ServiceUnavailableException("Failed to claim the receiver")
+
     async def get_sender_code(self, code: str) -> str | None:
         """Returns the session id a code names, or None once it has expired."""
         client = await self.get_client()
