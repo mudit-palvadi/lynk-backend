@@ -204,8 +204,7 @@ def evict_idle_rooms(
     evicted = []
     for sid in list(rooms):
         room = rooms[sid]
-        idle_for = current - room["last_activity"]
-        if idle_for >= max_idle_seconds:
+        if room_is_idle(room, now=current, max_idle_seconds=max_idle_seconds):
             rooms.pop(sid, None)
             evicted.append(sid)
     return evicted

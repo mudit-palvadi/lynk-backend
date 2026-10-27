@@ -185,7 +185,8 @@ class TestHardening:
         evicted = signaling.evict_idle_rooms(max_idle_seconds=60, now=now)
 
         assert "fresh" not in evicted and "fresh" in signaling.rooms
-        assert sorted(evicted) == ["stale-busy", "stale-empty"]
+        assert "stale-busy" not in evicted and "stale-busy" in signaling.rooms
+        assert evicted == ["stale-empty"]
 
     def test_safe_send_reports_failure(self):
         class Boom:
