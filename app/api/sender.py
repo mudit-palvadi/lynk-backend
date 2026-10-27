@@ -36,7 +36,15 @@ async def create_sender_session(service: SenderService = Depends(get_sender_serv
     "/join",
     response_model=SenderSessionJoinResponse,
     dependencies=[
-        Depends(RateLimiter(limit=10, window_seconds=60, bucket="sender-session-join"))
+        Depends(RateLimiter(limit=10, window_seconds=60, bucket="sender-session-join")),
+        Depends(
+            RateLimiter(
+                limit=100,
+                window_seconds=60,
+                bucket="sender-session-join-global",
+                scope="global",
+            )
+        ),
     ],
 )
 async def join_sender_session(

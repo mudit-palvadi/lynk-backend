@@ -90,14 +90,19 @@ class RateLimiter:
         limit: int,
         window_seconds: int = 60,
         bucket: str = "default",
+        *,
+        scope: str = "client",
     ) -> None:
         self.limit = limit
         self.window_seconds = window_seconds
         self.bucket = bucket
+        self.scope = scope
 
     async def __call__(self, request: Request) -> None:
-        client_ip = resolve_client_ip(request)
-        key = f"lynk:rate:{self.bucket}:{client_ip}"
+        # A client scope is one address. A global scope is one counter for
+        # every address, so many addresses cannot share out a guessable code.
+        identity = "global" if self.scope == "global" else resolve_client_ip(request)
+        key = f"lynk:rate:{self.bucket}:{identity}"
 
         try:
             client = await redis_service.get_client()
