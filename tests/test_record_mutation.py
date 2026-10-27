@@ -48,6 +48,26 @@ async def test_two_writers_keep_both_fields(fake_redis):
     assert stored == {"files": 1, "life": 1}
 
 
+async def test_a_finished_writer_does_not_delete_the_next_lock(fake_redis, monkeypatch):
+    await fake_redis.set("lynk:transfer:t-1", json.dumps({"n": 0}), ex=60)
+    original_release = redis_service.release_record_lock
+
+    async def release_after_takeover(client, lock_key, token):
+        # The first writer's lock expired and the next writer already owns it.
+        await client.set(lock_key, "next-writer")
+        await original_release(client, lock_key, token)
+
+    monkeypatch.setattr(redis_service, "release_record_lock", release_after_takeover)
+
+    def mutate(data: dict) -> dict:
+        data["n"] += 1
+        return data
+
+    await redis_service.mutate_json("lynk:transfer:t-1", mutate)
+
+    assert await fake_redis.get("lynk:transfer:t-1:lock") == "next-writer"
+
+
 async def test_two_sender_collects_return_the_key_once(fake_redis):
     service = SenderService(redis_service)
     created = await service.create_sender_session()
