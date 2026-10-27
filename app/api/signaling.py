@@ -175,6 +175,22 @@ def _trim_history(room: dict[str, Any]) -> None:
         total -= len(dropped)
 
 
+def room_is_idle(
+    room: dict[str, Any],
+    *,
+    now: float,
+    max_idle_seconds: float,
+) -> bool:
+    """An occupied room stays, even when no frame has arrived recently.
+
+    A quiet sender is still in the room. Dropping that room sends the
+    receiver into a new empty one, so the two peers never meet.
+    """
+    if room.get("members"):
+        return False
+    return now - room["last_activity"] >= max_idle_seconds
+
+
 def evict_idle_rooms(
     max_idle_seconds: float = DEFAULT_IDLE_EVICTION_SECONDS,
     now: float | None = None,
@@ -188,8 +204,7 @@ def evict_idle_rooms(
     evicted = []
     for sid in list(rooms):
         room = rooms[sid]
-        idle_for = current - room["last_activity"]
-        if idle_for >= max_idle_seconds:
+        if room_is_idle(room, now=current, max_idle_seconds=max_idle_seconds):
             rooms.pop(sid, None)
             evicted.append(sid)
     return evicted

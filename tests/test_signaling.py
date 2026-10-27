@@ -163,6 +163,12 @@ class TestHardening:
             ws.send_json({"type": "offer", "sdp": "ok"})
         # Reaching the end without an error frame means validation passed.
 
+    def test_an_occupied_room_is_not_idle(self):
+        occupied = {"members": ["peer"], "last_activity": 0.0}
+        empty = {"members": [], "last_activity": 0.0}
+        assert not signaling.room_is_idle(occupied, now=1000.0, max_idle_seconds=60)
+        assert signaling.room_is_idle(empty, now=1000.0, max_idle_seconds=60)
+
     def test_evict_idle_rooms_drops_stale_and_keeps_fresh(self):
         signaling.rooms.clear()
         fresh = signaling._get_room("fresh")
@@ -179,7 +185,8 @@ class TestHardening:
         evicted = signaling.evict_idle_rooms(max_idle_seconds=60, now=now)
 
         assert "fresh" not in evicted and "fresh" in signaling.rooms
-        assert sorted(evicted) == ["stale-busy", "stale-empty"]
+        assert "stale-busy" not in evicted and "stale-busy" in signaling.rooms
+        assert evicted == ["stale-empty"]
 
     def test_safe_send_reports_failure(self):
         class Boom:
