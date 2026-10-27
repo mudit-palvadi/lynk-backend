@@ -109,6 +109,23 @@ def test_different_clients_get_different_buckets(fake_redis) -> None:
     ]
 
 
+def test_a_global_bucket_is_one_counter_for_every_address(fake_redis) -> None:
+    limiter = RateLimiter(
+        limit=100,
+        window_seconds=60,
+        bucket="sender-session-join-global",
+        scope="global",
+    )
+
+    asyncio.run(_call(limiter, _FakeRequest(host=CLIENT_IP)))
+    asyncio.run(_call(limiter, _FakeRequest(host=CLIENT_IP_2)))
+
+    assert fake_redis.incr_keys == [
+        "lynk:rate:sender-session-join-global:global",
+        "lynk:rate:sender-session-join-global:global",
+    ]
+
+
 def test_different_buckets_do_not_share_a_window(fake_redis) -> None:
     create = RateLimiter(limit=5, window_seconds=60, bucket="transfer-create")
     extend = RateLimiter(limit=5, window_seconds=60, bucket="transfer-extend")
