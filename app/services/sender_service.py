@@ -170,18 +170,30 @@ class SenderService:
         session = SenderSessionModel.model_validate(data)
         if not secrets_match(sender_secret, session.sender_secret):
             raise UnauthorizedException()
-        if not session.receiver_pk:
-            raise TransferNotReadyException("No receiver has joined this session")
+        if session.status != "joined":
+            if session.status == "waiting":
+                raise TransferNotReadyException("No receiver has joined this session")
+            raise TransferNotReadyException("This session is already attached")
 
-        session.transfer_id = transfer_id
-        session.wrapped_key = wrapped_key
-        session.mode = mode
-        session.status = "attached"
-        await self.redis.update_sender_session(session_id, session.model_dump())
+        transfer = await self.redis.get_transfer(transfer_id)
+        if not transfer:
+            raise TransferNotFoundException("Transfer not found or expired")
 
+        def mutate(current: dict) -> dict:
+            fresh = SenderSessionModel.model_validate(current)
+            if fresh.status != "joined":
+                raise TransferNotReadyException("This session is already attached")
+            fresh.transfer_id = transfer_id
+            fresh.wrapped_key = wrapped_key
+            fresh.mode = mode
+            fresh.status = "attached"
+            return fresh.model_dump()
+
+        updated = await self._edit_session(session_id, mutate)
+        fresh = SenderSessionModel.model_validate(updated)
         return {
             "session_id": session_id,
-            "status": session.status,
+            "status": fresh.status,
             "expires_in": await self._ttl(session_id),
         }
 

@@ -304,6 +304,35 @@ class TestAttachTransfer:
                 sender_secret="not-the-secret",
             )
 
+    async def test_a_missing_transfer_is_refused(self, fake_redis):
+        created = await self._joined()
+
+        with pytest.raises(TransferNotFoundException):
+            await _service().attach_transfer(
+                created["session_id"],
+                "transfer-1",
+                WRAPPED,
+                sender_secret=created["sender_secret"],
+            )
+
+    async def test_attaching_twice_is_refused(self, fake_redis):
+        created = await self._joined()
+        await _seed_transfer()
+        await _service().attach_transfer(
+            created["session_id"],
+            "transfer-1",
+            WRAPPED,
+            sender_secret=created["sender_secret"],
+        )
+
+        with pytest.raises(TransferNotReadyException):
+            await _service().attach_transfer(
+                created["session_id"],
+                "transfer-1",
+                WRAPPED,
+                sender_secret=created["sender_secret"],
+            )
+
     async def test_an_unknown_session_is_refused(self, fake_redis):
         with pytest.raises(TransferNotFoundException):
             await _service().attach_transfer(
