@@ -7,6 +7,7 @@ transfer id in the path and keying on it would hand every request its own
 bucket (the limit would never fire).
 """
 
+import hashlib
 import ipaddress
 import secrets
 
@@ -22,11 +23,17 @@ SENDER_SECRET_HEADER = "X-Lynk-Sender-Secret"
 ACCESS_TOKEN_HEADER = "X-Lynk-Access-Token"
 
 
-def secrets_match(presented: str | None, expected: str) -> bool:
+# Hashed when a credential is missing, so the comparison is always 32 bytes
+# and an empty record cannot match a presented value.
+_ABSENT_SECRET = b"lynk-absent-secret"
+
+
+def secrets_match(presented: str | None, expected: str | None) -> bool:
     """Constant-time check. Empty or missing values never match."""
-    if not presented or not expected:
-        return False
-    return secrets.compare_digest(presented, expected)
+    left = hashlib.sha256((presented or "").encode()).digest()
+    right = hashlib.sha256(expected.encode() if expected else _ABSENT_SECRET).digest()
+    same = secrets.compare_digest(left, right)
+    return bool(presented) and bool(expected) and same
 
 
 _CLOUDFLARE_NETWORKS = [
