@@ -8,7 +8,7 @@ import fakeredis.aioredis
 import pytest
 
 from app.core.config import settings
-from app.core.exceptions import TransferNotReadyException
+from app.core.exceptions import TransferNotFoundException, TransferNotReadyException
 from app.services.r2_service import R2Service
 from app.services.receiver_service import ReceiverService
 from app.services.redis_service import redis_service
@@ -66,6 +66,55 @@ async def test_a_finished_writer_does_not_delete_the_next_lock(fake_redis, monke
     await redis_service.mutate_json("lynk:transfer:t-1", mutate)
 
     assert await fake_redis.get("lynk:transfer:t-1:lock") == "next-writer"
+
+
+async def test_a_completion_cannot_restore_a_cancelled_transfer(fake_redis, monkeypatch):
+    monkeypatch.setattr(
+        R2Service,
+        "generate_upload_url",
+        AsyncMock(return_value="https://r2.mock/upload"),
+    )
+    monkeypatch.setattr(R2Service, "verify_file_exists", AsyncMock(return_value=4096))
+    monkeypatch.setattr(R2Service, "delete_objects", AsyncMock())
+    service = TransferService(redis_service=redis_service, r2_service=R2Service())
+    created = await service.create_transfer(
+        [{"file_name": "a.txt", "file_size": 4096, "content_type": "text/plain"}]
+    )
+    held = asyncio.Event()
+    resume = asyncio.Event()
+    original = redis_service.acquire_record_lock
+
+    async def pause_the_cancel(client, lock_key):
+        token = await original(client, lock_key)
+        if not pause_the_cancel.used:
+            pause_the_cancel.used = True
+            held.set()
+            await resume.wait()
+        return token
+
+    pause_the_cancel.used = False
+    monkeypatch.setattr(redis_service, "acquire_record_lock", pause_the_cancel)
+
+    cancel_task = asyncio.create_task(
+        service.cancel_transfer(
+            created["transfer_id"],
+            sender_secret=created["sender_secret"],
+        )
+    )
+    await held.wait()
+    complete_task = asyncio.create_task(
+        service.complete_file(
+            created["transfer_id"],
+            created["files"][0]["file_id"],
+            sender_secret=created["sender_secret"],
+        )
+    )
+    await asyncio.sleep(0.05)
+    resume.set()
+    await cancel_task
+    with pytest.raises(TransferNotFoundException):
+        await complete_task
+    assert await fake_redis.get(redis_service._get_key(created["transfer_id"])) is None
 
 
 async def test_two_sender_collects_return_the_key_once(fake_redis):
