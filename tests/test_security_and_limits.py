@@ -7,6 +7,7 @@ Encodes the documented guarantees:
 - CORS restricted to explicit allowed origins (no wildcard + credentials).
 """
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -193,6 +194,9 @@ def test_get_receiver_session_delivers_wrapped_key_once(mock_env):
         "expires_at": "2026-07-15T00:10:00Z",
     }
     mock_env["redis"].get_receiver_session = AsyncMock(return_value=session_data)
+    mock_env["redis"].take_receiver_wrapped_key = AsyncMock(
+        return_value="x25519-sealed-blob-base64=="
+    )
 
     mock_client = AsyncMock()
     mock_client.ttl = AsyncMock(return_value=600)
@@ -202,9 +206,8 @@ def test_get_receiver_session_delivers_wrapped_key_once(mock_env):
     assert response.status_code == 200
     assert response.json()["wrapped_key"] == "x25519-sealed-blob-base64=="
 
-    mock_env["redis"].update_receiver_session.assert_called_once()
-    wiped = mock_env["redis"].update_receiver_session.call_args.args[1]
-    assert wiped["wrapped_key"] is None
+    mock_env["redis"].take_receiver_wrapped_key.assert_awaited_once_with("sess_123")
+    mock_env["redis"].update_receiver_session.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +228,13 @@ def test_extend_transfer_returns_extended_expiry(mock_env):
         "files": [],
     }
     mock_env["redis"].get_transfer = AsyncMock(return_value=transfer_data)
-    mock_env["redis"].extend_transfer = AsyncMock()
+
+    async def mutate_json(key, mutate, ttl_seconds=None):
+        updated = mutate(json.loads(json.dumps(transfer_data)))
+        mutate_json.ttl = ttl_seconds
+        return updated
+
+    mock_env["redis"].mutate_json = mutate_json
     mock_env["redis"].get_client = AsyncMock(return_value=AsyncMock())
 
     response = client.post(
@@ -238,7 +247,7 @@ def test_extend_transfer_returns_extended_expiry(mock_env):
     assert data["transfer_id"] == "tx_123"
     assert data["expires_in"] == settings.EXTENDED_TRANSFER_LIFETIME_SECONDS
 
-    mock_env["redis"].extend_transfer.assert_called_once()
+    assert mutate_json.ttl == settings.EXTENDED_TRANSFER_LIFETIME_SECONDS
 
 
 def test_extend_transfer_not_found(mock_env):

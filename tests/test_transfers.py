@@ -1,3 +1,4 @@
+import json
 from unittest.mock import ANY, AsyncMock
 import pytest
 from fastapi.testclient import TestClient
@@ -187,7 +188,13 @@ def test_complete_file_success():
     }
     mock_redis.get_transfer = AsyncMock(return_value=transfer_data)
     mock_r2.verify_file_exists = AsyncMock(return_value=50)
-    mock_redis.update_transfer = AsyncMock()
+
+    async def mutate_json(key, mutate, ttl_seconds=None):
+        updated = mutate(json.loads(json.dumps(transfer_data)))
+        mutate_json.saved = updated
+        return updated
+
+    mock_redis.mutate_json = mutate_json
 
     response = client.post(
         "/api/v1/transfers/tx_123/files/fid_1/complete",
@@ -199,7 +206,8 @@ def test_complete_file_success():
     assert data["file_id"] == "fid_1"
     assert data["status"] == "uploaded"
     assert data["transfer_status"] == "ready"
-    mock_redis.update_transfer.assert_called_once()
+    assert mutate_json.saved["files"][0]["status"] == "uploaded"
+    assert mutate_json.saved["status"] == "ready"
 
 
 def test_create_transfer_rejects_non_positive_file_size():
