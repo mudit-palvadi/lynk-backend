@@ -8,6 +8,7 @@ class SenderSessionCreateResponse(BaseModel):
     code: str
     status: str
     expires_in: int
+    sender_secret: str
 
 
 class SenderSessionJoinRequest(BaseModel):

@@ -1,3 +1,5 @@
+import asyncio
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -6,7 +8,9 @@ from app.core.exceptions import (
     ServiceUnavailableException,
     TransferNotFoundException,
     TransferNotReadyException,
+    UnauthorizedException,
 )
+from app.core.security import secrets_match
 from app.models.sender import SenderSessionModel
 from app.services.redis_service import RedisService
 
@@ -36,6 +40,7 @@ class SenderService:
         now = datetime.now(timezone.utc)
         expires_at = (now + timedelta(seconds=ttl)).isoformat()
         session_id = self._generate_id()
+        sender_secret = secrets.token_urlsafe(32)
 
         for _ in range(self.MAX_CODE_ATTEMPTS):
             code = self._generate_code()
@@ -47,6 +52,7 @@ class SenderService:
             session = SenderSessionModel(
                 session_id=session_id,
                 code=code,
+                sender_secret=sender_secret,
                 status="waiting",
                 created_at=now.isoformat(),
                 expires_at=expires_at,
@@ -58,6 +64,7 @@ class SenderService:
                 "code": code,
                 "status": "waiting",
                 "expires_in": ttl,
+                "sender_secret": sender_secret,
             }
 
         raise ServiceUnavailableException("Could not allocate a session code")
@@ -68,26 +75,63 @@ class SenderService:
         ttl = await client.ttl(key)
         return max(0, ttl) if ttl != -2 else 0
 
+    async def _edit_session(self, session_id: str, mutate) -> dict:
+        """Apply one session change without dropping a concurrent edit."""
+        client = await self.redis.get_client()
+        key = self.redis._get_sender_key(session_id)
+        lock_key = f"{key}:lock"
+        acquired = False
+        try:
+            for _ in range(40):
+                acquired = bool(await client.set(lock_key, "1", nx=True, px=3000))
+                if acquired:
+                    break
+                await asyncio.sleep(0.02)
+            if not acquired:
+                raise ServiceUnavailableException("Failed to update the record")
+
+            raw = await client.get(key)
+            if not raw:
+                raise TransferNotFoundException("Sender session not found or expired")
+            updated = mutate(json.loads(raw))
+            if not isinstance(updated, dict):
+                raise ServiceUnavailableException("Failed to update the record")
+
+            ttl = await client.ttl(key)
+            if ttl is None or ttl <= 0:
+                raise TransferNotFoundException("Sender session not found or expired")
+            await client.set(key, json.dumps(updated), ex=int(ttl))
+            return updated
+        finally:
+            if acquired:
+                await client.delete(lock_key)
+
     async def join_sender_session(self, code: str, receiver_pk: str) -> dict:
         session_id = await self.redis.get_sender_code(code)
         if not session_id:
             raise TransferNotFoundException("Session code not found or expired")
 
-        data = await self.redis.get_sender_session(session_id)
-        if not data:
+        ttl = await self._ttl(session_id)
+        if ttl <= 0:
             raise TransferNotFoundException("Session code not found or expired")
 
-        session = SenderSessionModel.model_validate(data)
-
-        # A code names the session, it does not own it: the first receiver that
-        # presents a key claims the session, and nobody else can take it over.
-        if session.receiver_pk and session.receiver_pk != receiver_pk:
+        # The claim is the race: the first public key is stored with SET NX,
+        # and a second key cannot replace it.
+        claim = await self.redis.claim_sender_receiver(session_id, receiver_pk, ttl)
+        if claim == "other":
             raise TransferNotReadyException("This session already has a receiver")
 
-        session.receiver_pk = receiver_pk
-        session.status = "joined"
-        await self.redis.update_sender_session(session_id, session.model_dump())
+        def mutate(data: dict) -> dict:
+            session = SenderSessionModel.model_validate(data)
+            # A retry after the sender has attached must not rewind the session.
+            if session.status == "attached":
+                return data
+            session.receiver_pk = receiver_pk
+            session.status = "joined"
+            return session.model_dump()
 
+        updated = await self._edit_session(session_id, mutate)
+        session = SenderSessionModel.model_validate(updated)
         return {
             "session_id": session_id,
             "status": session.status,
@@ -117,24 +161,39 @@ class SenderService:
         transfer_id: str,
         wrapped_key: str,
         mode: str = "cloud",
+        sender_secret: str | None = None,
     ) -> dict:
         data = await self.redis.get_sender_session(session_id)
         if not data:
             raise TransferNotFoundException("Sender session not found or expired")
 
         session = SenderSessionModel.model_validate(data)
-        if not session.receiver_pk:
-            raise TransferNotReadyException("No receiver has joined this session")
+        if not secrets_match(sender_secret, session.sender_secret):
+            raise UnauthorizedException()
+        if session.status != "joined":
+            if session.status == "waiting":
+                raise TransferNotReadyException("No receiver has joined this session")
+            raise TransferNotReadyException("This session is already attached")
 
-        session.transfer_id = transfer_id
-        session.wrapped_key = wrapped_key
-        session.mode = mode
-        session.status = "attached"
-        await self.redis.update_sender_session(session_id, session.model_dump())
+        transfer = await self.redis.get_transfer(transfer_id)
+        if not transfer:
+            raise TransferNotFoundException("Transfer not found or expired")
 
+        def mutate(current: dict) -> dict:
+            fresh = SenderSessionModel.model_validate(current)
+            if fresh.status != "joined":
+                raise TransferNotReadyException("This session is already attached")
+            fresh.transfer_id = transfer_id
+            fresh.wrapped_key = wrapped_key
+            fresh.mode = mode
+            fresh.status = "attached"
+            return fresh.model_dump()
+
+        updated = await self._edit_session(session_id, mutate)
+        fresh = SenderSessionModel.model_validate(updated)
         return {
             "session_id": session_id,
-            "status": session.status,
+            "status": fresh.status,
             "expires_in": await self._ttl(session_id),
         }
 
