@@ -167,13 +167,25 @@ class RedisService:
             raise ServiceUnavailableException("Failed to update transfer metadata")
 
     async def delete_transfer(self, transfer_id: str) -> None:
+        """Remove a transfer while holding the same lock as an in-place edit.
+
+        A completion that is still outside the lock then sees a missing record
+        and stops, instead of writing the record back after this delete.
+        """
         client = await self.get_client()
         key = self._get_key(transfer_id)
+        token = None
         try:
+            token = await self.acquire_record_lock(client, f"{key}:lock")
             await client.delete(key)
+        except ServiceUnavailableException:
+            raise
         except Exception as e:
             logger.error(f"Redis delete_transfer failed: {e}")
             raise ServiceUnavailableException("Failed to delete transfer metadata")
+        finally:
+            if token is not None:
+                await self.release_record_lock(client, key + ":lock", token)
 
     async def extend_transfer(self, transfer_id: str, data: dict, ttl_seconds: int) -> None:
         """
