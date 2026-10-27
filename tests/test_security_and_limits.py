@@ -132,16 +132,20 @@ def test_attach_transfer_never_stores_client_supplied_aes_key(mock_env):
         "total_size": 100,
         "files": [],
     }
-    mock_env["redis"].get_receiver_session = AsyncMock(return_value=session_data)
     mock_env["redis"].get_transfer = AsyncMock(return_value=transfer_data)
-    mock_env["redis"].update_receiver_session = AsyncMock()
+    saved: dict = {}
+
+    async def mutate_json(key, mutate, ttl_seconds=None):
+        saved["value"] = mutate(dict(session_data))
+        return saved["value"]
+
+    mock_env["redis"].mutate_json = mutate_json
 
     payload = {"transfer_id": "tx_123", "aes_key": "attacker_or_legacy_key"}
     response = client.post("/api/v1/receiver-sessions/sess_123/attach-transfer", json=payload)
     assert response.status_code == 200
 
-    mock_env["redis"].update_receiver_session.assert_called_once()
-    persisted = mock_env["redis"].update_receiver_session.call_args.args[1]
+    persisted = saved["value"]
     assert "aes_key" not in persisted
     assert "attacker_or_legacy_key" not in str(persisted)
 
@@ -166,9 +170,14 @@ def test_attach_transfer_stores_wrapped_key(mock_env):
         "total_size": 100,
         "files": [],
     }
-    mock_env["redis"].get_receiver_session = AsyncMock(return_value=session_data)
     mock_env["redis"].get_transfer = AsyncMock(return_value=transfer_data)
-    mock_env["redis"].update_receiver_session = AsyncMock()
+    saved: dict = {}
+
+    async def mutate_json(key, mutate, ttl_seconds=None):
+        saved["value"] = mutate(dict(session_data))
+        return saved["value"]
+
+    mock_env["redis"].mutate_json = mutate_json
 
     wrapped = "x25519-sealed-blob-base64=="
     response = client.post(
@@ -177,9 +186,7 @@ def test_attach_transfer_stores_wrapped_key(mock_env):
     )
     assert response.status_code == 200
 
-    mock_env["redis"].update_receiver_session.assert_called_once()
-    persisted = mock_env["redis"].update_receiver_session.call_args.args[1]
-    assert persisted["wrapped_key"] == wrapped
+    assert saved["value"]["wrapped_key"] == wrapped
 
 
 def test_get_receiver_session_delivers_wrapped_key_once(mock_env):
