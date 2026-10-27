@@ -37,6 +37,8 @@ def validate_file_name(name: str) -> str:
         raise ValueError("File name must not contain a path separator")
     if ".." in name:
         raise ValueError("File name must not contain '..'")
+    if ":" in name:
+        raise ValueError("File name must not contain ':'")
     if name != name.strip():
         raise ValueError("File name must not start or end with whitespace")
     if len(name.encode("utf-8")) > MAX_FILE_NAME_BYTES:
