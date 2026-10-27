@@ -108,6 +108,7 @@ app.add_middleware(
         "Accept",
         "X-Lynk-Sender-Secret",
         "X-Lynk-Access-Token",
+        "X-Lynk-Receiver-Secret",
     ],
 )
 

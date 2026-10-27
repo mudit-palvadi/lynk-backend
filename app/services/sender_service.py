@@ -116,9 +116,11 @@ class SenderService:
 
         def mutate(data: dict) -> dict:
             session = SenderSessionModel.model_validate(data)
+            if not session.receiver_secret:
+                session.receiver_secret = secrets.token_hex(16)
             # A retry after the sender has attached must not rewind the session.
             if session.status == "attached":
-                return data
+                return session.model_dump()
             session.receiver_pk = receiver_pk
             session.status = "joined"
             return session.model_dump()
@@ -129,6 +131,7 @@ class SenderService:
             "session_id": session_id,
             "status": session.status,
             "expires_in": await self._ttl(session_id),
+            "receiver_secret": session.receiver_secret,
         }
 
     async def get_sender_session(self, session_id: str) -> dict:
@@ -190,12 +193,18 @@ class SenderService:
             "expires_in": await self._ttl(session_id),
         }
 
-    async def collect_key(self, session_id: str) -> dict:
+    async def collect_key(
+        self, session_id: str, receiver_secret: str | None = None
+    ) -> dict:
         data = await self.redis.get_sender_session(session_id)
         if not data:
+            secrets_match(receiver_secret, None)
             raise TransferNotFoundException("Sender session not found or expired")
 
         session = SenderSessionModel.model_validate(data)
+        # Checked before the key is taken, so a guess cannot consume the wrap.
+        if not secrets_match(receiver_secret, session.receiver_secret):
+            raise UnauthorizedException()
         if session.status != "attached" or not session.wrapped_key:
             raise TransferNotReadyException("The sender has not wrapped the key yet")
 

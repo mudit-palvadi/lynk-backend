@@ -20,6 +20,9 @@ class SenderSessionJoinResponse(BaseModel):
     session_id: str
     status: str
     expires_in: int
+    # The receiver keeps this and presents it when collecting the wrapped key.
+    # The sender's poll never receives it.
+    receiver_secret: str
 
 
 class SenderSessionResponse(BaseModel):

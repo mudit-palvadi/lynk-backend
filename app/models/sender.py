@@ -8,6 +8,8 @@ class SenderSessionModel(BaseModel):
     code: str
     # Presented on attach. The poll that returns the receiver's key never includes it.
     sender_secret: str = ""
+    # Returned only by join, then required to collect the wrapped key.
+    receiver_secret: str = ""
     # waiting -> joined (the receiver published its key) -> attached (key wrapped)
     status: str = "waiting"
     # Receiver's ephemeral public key, so the sender can seal the AES key to it.
