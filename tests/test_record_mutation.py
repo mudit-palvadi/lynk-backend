@@ -120,7 +120,7 @@ async def test_a_completion_cannot_restore_a_cancelled_transfer(fake_redis, monk
 async def test_two_sender_collects_return_the_key_once(fake_redis):
     service = SenderService(redis_service)
     created = await service.create_sender_session()
-    await service.join_sender_session(created["code"], "k" * 32)
+    joined = await service.join_sender_session(created["code"], "k" * 32)
     await redis_service.set_transfer(
         "transfer-1",
         {"transfer_id": "transfer-1", "status": "uploading"},
@@ -134,8 +134,8 @@ async def test_two_sender_collects_return_the_key_once(fake_redis):
     )
 
     results = await asyncio.gather(
-        service.collect_key(created["session_id"]),
-        service.collect_key(created["session_id"]),
+        service.collect_key(created["session_id"], joined["receiver_secret"]),
+        service.collect_key(created["session_id"], joined["receiver_secret"]),
         return_exceptions=True,
     )
 

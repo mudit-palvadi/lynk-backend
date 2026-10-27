@@ -21,6 +21,7 @@ from app.services.redis_service import redis_service
 # every protected request.
 SENDER_SECRET_HEADER = "X-Lynk-Sender-Secret"
 ACCESS_TOKEN_HEADER = "X-Lynk-Access-Token"
+RECEIVER_SECRET_HEADER = "X-Lynk-Receiver-Secret"
 
 
 # Hashed when a credential is missing, so the comparison is always 32 bytes
