@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
-from app.core.exceptions import TransferNotFoundException
+from app.core.exceptions import TransferNotFoundException, TransferNotReadyException
 from app.models.receiver import ReceiverSessionModel
 from app.services.redis_service import RedisService
 
@@ -64,21 +64,33 @@ class ReceiverService:
     async def attach_transfer(
         self, session_id: str, transfer_id: str, wrapped_key: str | None = None
     ) -> None:
-        session_data = await self.redis.get_receiver_session(session_id)
-        if not session_data:
-            raise TransferNotFoundException("Receiver session not found or expired")
-
         transfer_data = await self.redis.get_transfer(transfer_id)
         if not transfer_data:
             raise TransferNotFoundException("Transfer not found or expired")
 
-        session = ReceiverSessionModel.model_validate(session_data)
-        session.status = "attached"
-        session.transfer_id = transfer_id
-        if wrapped_key:
-            session.wrapped_key = wrapped_key
+        incoming = wrapped_key or ""
 
-        await self.redis.update_receiver_session(session_id, session.model_dump())
+        def mutate(data: dict) -> dict:
+            session = ReceiverSessionModel.model_validate(data)
+            current = session.wrapped_key or ""
+            if session.status == "attached":
+                # A second writer must not replace the key, and a key that was
+                # already taken must not be written back from a stale copy.
+                if session.transfer_id != transfer_id or (incoming and incoming != current):
+                    raise TransferNotReadyException("Receiver session is already attached")
+                return data
+            if session.status != "waiting":
+                raise TransferNotReadyException("Receiver session is already attached")
+            session.status = "attached"
+            session.transfer_id = transfer_id
+            session.wrapped_key = incoming or None
+            return session.model_dump()
+
+        updated = await self.redis.mutate_json(
+            self.redis._get_receiver_key(session_id), mutate
+        )
+        if updated is None:
+            raise TransferNotFoundException("Receiver session not found or expired")
 
     async def cancel_receiver_session(self, session_id: str) -> None:
         await self.redis.delete_receiver_session(session_id)

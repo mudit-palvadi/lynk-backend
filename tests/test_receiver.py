@@ -127,20 +127,23 @@ def test_attach_transfer_success_without_aes_key():
         "total_size": 100,
         "files": [],
     }
-    mock_redis.get_receiver_session = AsyncMock(return_value=session_data)
     mock_redis.get_transfer = AsyncMock(return_value=transfer_data)
-    mock_redis.update_receiver_session = AsyncMock()
+
+    async def mutate_json(key, mutate, ttl_seconds=None):
+        return mutate(dict(session_data))
+
+    mock_redis.mutate_json = mutate_json
 
     payload = {"transfer_id": "tx_123"}
     response = client.post("/api/v1/receiver-sessions/sess_123/attach-transfer", json=payload)
 
     assert response.status_code == 200
     assert response.json()["detail"] == "Transfer attached successfully"
-    mock_redis.update_receiver_session.assert_called_once()
 
 
 def test_attach_transfer_session_not_found():
-    mock_redis.get_receiver_session = AsyncMock(return_value=None)
+    mock_redis.get_transfer = AsyncMock(return_value={"transfer_id": "tx_123"})
+    mock_redis.mutate_json = AsyncMock(return_value=None)
     payload = {"transfer_id": "tx_123"}
     response = client.post("/api/v1/receiver-sessions/sess_missing/attach-transfer", json=payload)
     assert response.status_code == 404
