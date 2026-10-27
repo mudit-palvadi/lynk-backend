@@ -36,6 +36,7 @@ class SenderService:
         now = datetime.now(timezone.utc)
         expires_at = (now + timedelta(seconds=ttl)).isoformat()
         session_id = self._generate_id()
+        sender_secret = secrets.token_urlsafe(32)
 
         for _ in range(self.MAX_CODE_ATTEMPTS):
             code = self._generate_code()
@@ -47,6 +48,7 @@ class SenderService:
             session = SenderSessionModel(
                 session_id=session_id,
                 code=code,
+                sender_secret=sender_secret,
                 status="waiting",
                 created_at=now.isoformat(),
                 expires_at=expires_at,
@@ -58,6 +60,7 @@ class SenderService:
                 "code": code,
                 "status": "waiting",
                 "expires_in": ttl,
+                "sender_secret": sender_secret,
             }
 
         raise ServiceUnavailableException("Could not allocate a session code")

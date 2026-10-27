@@ -58,6 +58,8 @@ class TestCreateSenderSession:
         assert CODE_PATTERN.match(created["code"])
         assert created["status"] == "waiting"
         assert created["expires_in"] == settings.SENDER_SESSION_LIFETIME_SECONDS
+        assert created["sender_secret"]
+        assert created["sender_secret"] != created["code"]
 
     async def test_the_code_points_at_the_session_and_expires_with_it(
         self, fake_redis
@@ -75,6 +77,9 @@ class TestCreateSenderSession:
         assert stored["code"] == created["code"]
         assert stored["status"] == "waiting"
         assert stored["receiver_pk"] is None
+        assert stored["sender_secret"] == created["sender_secret"]
+        view = await _service().get_sender_session(created["session_id"])
+        assert "sender_secret" not in view
 
     async def test_a_taken_code_is_skipped(self, fake_redis):
         service = _service()
@@ -107,6 +112,7 @@ class TestSenderSessionRoute:
         assert CODE_PATTERN.match(body["code"])
         assert body["status"] == "waiting"
         assert body["expires_in"] == settings.SENDER_SESSION_LIFETIME_SECONDS
+        assert body["sender_secret"]
 
 
 class TestJoinSenderSession:

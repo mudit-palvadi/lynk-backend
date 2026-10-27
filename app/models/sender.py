@@ -6,6 +6,8 @@ class SenderSessionModel(BaseModel):
 
     session_id: str
     code: str
+    # Presented on attach. The poll that returns the receiver's key never includes it.
+    sender_secret: str = ""
     # waiting -> joined (the receiver published its key) -> attached (key wrapped)
     status: str = "waiting"
     # Receiver's ephemeral public key, so the sender can seal the AES key to it.
