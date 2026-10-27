@@ -47,21 +47,19 @@ class ReceiverService:
         ttl = await client.ttl(key)
         expires_in = max(0, ttl) if ttl != -2 else 0
 
-        res = {
+        # The key is taken under the record lock. A second reader, even one
+        # that loaded this same snapshot, receives nothing.
+        wrapped_key = None
+        if session.status == "attached" and session.wrapped_key:
+            wrapped_key = await self.redis.take_receiver_wrapped_key(session_id)
+
+        return {
             "session_id": session.session_id,
             "status": session.status,
             "transfer_id": session.transfer_id,
-            "wrapped_key": session.wrapped_key,
+            "wrapped_key": wrapped_key,
             "expires_in": expires_in,
         }
-
-        # Single-use delivery: once the ECDH-sealed wrapped_key is handed to
-        # the receiver, wipe it from Redis so no later reader can obtain it.
-        if session.status == "attached" and session.wrapped_key:
-            session.wrapped_key = None
-            await self.redis.update_receiver_session(session_id, session.model_dump())
-
-        return res
 
     async def attach_transfer(
         self, session_id: str, transfer_id: str, wrapped_key: str | None = None

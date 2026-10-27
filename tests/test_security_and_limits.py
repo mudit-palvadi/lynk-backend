@@ -193,6 +193,9 @@ def test_get_receiver_session_delivers_wrapped_key_once(mock_env):
         "expires_at": "2026-07-15T00:10:00Z",
     }
     mock_env["redis"].get_receiver_session = AsyncMock(return_value=session_data)
+    mock_env["redis"].take_receiver_wrapped_key = AsyncMock(
+        return_value="x25519-sealed-blob-base64=="
+    )
 
     mock_client = AsyncMock()
     mock_client.ttl = AsyncMock(return_value=600)
@@ -202,9 +205,8 @@ def test_get_receiver_session_delivers_wrapped_key_once(mock_env):
     assert response.status_code == 200
     assert response.json()["wrapped_key"] == "x25519-sealed-blob-base64=="
 
-    mock_env["redis"].update_receiver_session.assert_called_once()
-    wiped = mock_env["redis"].update_receiver_session.call_args.args[1]
-    assert wiped["wrapped_key"] is None
+    mock_env["redis"].take_receiver_wrapped_key.assert_awaited_once_with("sess_123")
+    mock_env["redis"].update_receiver_session.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

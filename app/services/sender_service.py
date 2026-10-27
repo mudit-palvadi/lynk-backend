@@ -155,16 +155,13 @@ class SenderService:
             if transfer and transfer.get("status") == "ready":
                 mode = "cloud"
 
-        res = {
+        wrapped_key = await self.redis.take_sender_wrapped_key(session_id)
+        if not wrapped_key:
+            raise TransferNotReadyException("The sender has not wrapped the key yet")
+
+        return {
             "transfer_id": session.transfer_id,
-            "wrapped_key": session.wrapped_key,
+            "wrapped_key": wrapped_key,
             "mode": mode,
             "expires_in": await self._ttl(session_id),
         }
-
-        # Single-use delivery: the key is wiped once handed over, so a later
-        # reader of the same session cannot obtain it again.
-        session.wrapped_key = None
-        await self.redis.update_sender_session(session_id, session.model_dump())
-
-        return res

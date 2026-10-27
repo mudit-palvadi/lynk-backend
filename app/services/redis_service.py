@@ -75,6 +75,25 @@ class RedisService:
             if acquired:
                 await client.delete(lock_key)
 
+    async def _take_wrapped_key(self, key: str) -> str | None:
+        """Return the wrapped key once, and clear it before anyone else can."""
+        taken: dict[str, str | None] = {"value": None}
+
+        def mutate(data: dict) -> dict:
+            if data.get("status") == "attached" and data.get("wrapped_key"):
+                taken["value"] = data["wrapped_key"]
+                data["wrapped_key"] = None
+            return data
+
+        await self.mutate_json(key, mutate)
+        return taken["value"]
+
+    async def take_receiver_wrapped_key(self, session_id: str) -> str | None:
+        return await self._take_wrapped_key(self._get_receiver_key(session_id))
+
+    async def take_sender_wrapped_key(self, session_id: str) -> str | None:
+        return await self._take_wrapped_key(self._get_sender_key(session_id))
+
     def _get_key(self, transfer_id: str) -> str:
         return f"lynk:transfer:{transfer_id}"
 
