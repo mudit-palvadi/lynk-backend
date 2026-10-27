@@ -1,4 +1,3 @@
-import asyncio
 import json
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -80,15 +79,9 @@ class SenderService:
         client = await self.redis.get_client()
         key = self.redis._get_sender_key(session_id)
         lock_key = f"{key}:lock"
-        acquired = False
+        token = None
         try:
-            for _ in range(40):
-                acquired = bool(await client.set(lock_key, "1", nx=True, px=3000))
-                if acquired:
-                    break
-                await asyncio.sleep(0.02)
-            if not acquired:
-                raise ServiceUnavailableException("Failed to update the record")
+            token = await self.redis.acquire_record_lock(client, lock_key)
 
             raw = await client.get(key)
             if not raw:
@@ -103,8 +96,8 @@ class SenderService:
             await client.set(key, json.dumps(updated), ex=int(ttl))
             return updated
         finally:
-            if acquired:
-                await client.delete(lock_key)
+            if token is not None:
+                await self.redis.release_record_lock(client, lock_key, token)
 
     async def join_sender_session(self, code: str, receiver_pk: str) -> dict:
         session_id = await self.redis.get_sender_code(code)

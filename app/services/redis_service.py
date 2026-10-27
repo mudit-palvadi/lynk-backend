@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import secrets
 import redis.asyncio as aioredis
 from app.core.config import settings
 from app.core.exceptions import ServiceUnavailableException, TransferNotFoundException
@@ -45,15 +46,9 @@ class RedisService:
         """
         client = await self.get_client()
         lock_key = f"{key}:lock"
-        acquired = False
+        token = None
         try:
-            for _ in range(40):
-                acquired = bool(await client.set(lock_key, "1", nx=True, px=3000))
-                if acquired:
-                    break
-                await asyncio.sleep(0.02)
-            if not acquired:
-                raise ServiceUnavailableException("Failed to update the record")
+            token = await self.acquire_record_lock(client, lock_key)
 
             raw = await client.get(key)
             if not raw:
@@ -72,8 +67,27 @@ class RedisService:
                 await client.set(key, payload, ex=ttl_seconds)
             return updated
         finally:
-            if acquired:
-                await client.delete(lock_key)
+            if token is not None:
+                await self.release_record_lock(client, lock_key, token)
+
+    async def acquire_record_lock(self, client, lock_key: str) -> str:
+        """Take the short exclusive lock and return the token that owns it.
+
+        The token is random. A writer that runs past the lock expiry must not
+        delete the lock a later writer has already taken.
+        """
+        token = secrets.token_hex(16)
+        for _ in range(40):
+            if await client.set(lock_key, token, nx=True, px=3000):
+                return token
+            await asyncio.sleep(0.02)
+        raise ServiceUnavailableException("Failed to update the record")
+
+    async def release_record_lock(self, client, lock_key: str, token: str) -> None:
+        """Drop the lock only when this writer still holds it."""
+        current = await client.get(lock_key)
+        if current == token:
+            await client.delete(lock_key)
 
     async def _take_wrapped_key(self, key: str) -> str | None:
         """Return the wrapped key once, and clear it before anyone else can."""
