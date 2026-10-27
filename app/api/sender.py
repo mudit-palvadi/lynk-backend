@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, status
 
 from app.core.security import RateLimiter
 from app.schemas.sender import (
@@ -58,10 +58,15 @@ async def get_sender_session(
 async def attach_transfer(
     session_id: str,
     payload: SenderSessionAttachRequest,
+    x_lynk_sender_secret: str | None = Header(default=None),
     service: SenderService = Depends(get_sender_service),
 ):
     return await service.attach_transfer(
-        session_id, payload.transfer_id, payload.wrapped_key, payload.mode
+        session_id,
+        payload.transfer_id,
+        payload.wrapped_key,
+        payload.mode,
+        sender_secret=x_lynk_sender_secret,
     )
 
 

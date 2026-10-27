@@ -6,7 +6,9 @@ from app.core.exceptions import (
     ServiceUnavailableException,
     TransferNotFoundException,
     TransferNotReadyException,
+    UnauthorizedException,
 )
+from app.core.security import secrets_match
 from app.models.sender import SenderSessionModel
 from app.services.redis_service import RedisService
 
@@ -120,12 +122,15 @@ class SenderService:
         transfer_id: str,
         wrapped_key: str,
         mode: str = "cloud",
+        sender_secret: str | None = None,
     ) -> dict:
         data = await self.redis.get_sender_session(session_id)
         if not data:
             raise TransferNotFoundException("Sender session not found or expired")
 
         session = SenderSessionModel.model_validate(data)
+        if not secrets_match(sender_secret, session.sender_secret):
+            raise UnauthorizedException()
         if not session.receiver_pk:
             raise TransferNotReadyException("No receiver has joined this session")
 

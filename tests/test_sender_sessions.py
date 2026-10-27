@@ -17,6 +17,7 @@ from app.core.exceptions import (
     ServiceUnavailableException,
     TransferNotFoundException,
     TransferNotReadyException,
+    UnauthorizedException,
 )
 from app.main import app
 from app.services.redis_service import redis_service
@@ -200,7 +201,10 @@ class TestAttachTransfer:
         created = await self._joined()
 
         attached = await _service().attach_transfer(
-            created["session_id"], "transfer-1", WRAPPED
+            created["session_id"],
+            "transfer-1",
+            WRAPPED,
+            sender_secret=created["sender_secret"],
         )
 
         assert attached["status"] == "attached"
@@ -211,7 +215,11 @@ class TestAttachTransfer:
         created = await self._joined()
 
         await _service().attach_transfer(
-            created["session_id"], "transfer-1", WRAPPED, "p2p"
+            created["session_id"],
+            "transfer-1",
+            WRAPPED,
+            "p2p",
+            sender_secret=created["sender_secret"],
         )
         collected = await _service().collect_key(created["session_id"])
 
@@ -222,19 +230,48 @@ class TestAttachTransfer:
 
         with pytest.raises(TransferNotReadyException):
             await _service().attach_transfer(
+                created["session_id"],
+                "transfer-1",
+                WRAPPED,
+                sender_secret=created["sender_secret"],
+            )
+
+    async def test_attaching_without_the_secret_is_refused(self, fake_redis):
+        created = await self._joined()
+
+        with pytest.raises(UnauthorizedException):
+            await _service().attach_transfer(
                 created["session_id"], "transfer-1", WRAPPED
+            )
+
+    async def test_the_wrong_secret_is_refused(self, fake_redis):
+        created = await self._joined()
+
+        with pytest.raises(UnauthorizedException):
+            await _service().attach_transfer(
+                created["session_id"],
+                "transfer-1",
+                WRAPPED,
+                sender_secret="not-the-secret",
             )
 
     async def test_an_unknown_session_is_refused(self, fake_redis):
         with pytest.raises(TransferNotFoundException):
-            await _service().attach_transfer("nope", "transfer-1", WRAPPED)
+            await _service().attach_transfer(
+                "nope", "transfer-1", WRAPPED, sender_secret="secret"
+            )
 
 
 class TestCollectKey:
     async def _attached(self) -> dict:
         created = await _service().create_sender_session()
         await _service().join_sender_session(created["code"], PK)
-        await _service().attach_transfer(created["session_id"], "transfer-1", WRAPPED)
+        await _service().attach_transfer(
+            created["session_id"],
+            "transfer-1",
+            WRAPPED,
+            sender_secret=created["sender_secret"],
+        )
         return created
 
     async def test_the_receiver_collects_the_key_once(self, fake_redis):
@@ -257,7 +294,11 @@ class TestCollectKey:
     ):
         created = await self._attached()
         await _service().attach_transfer(
-            created["session_id"], "transfer-1", WRAPPED, "p2p"
+            created["session_id"],
+            "transfer-1",
+            WRAPPED,
+            "p2p",
+            sender_secret=created["sender_secret"],
         )
         await redis_service.set_transfer(
             "transfer-1",
@@ -281,7 +322,11 @@ class TestCollectKey:
     ):
         created = await self._attached()
         await _service().attach_transfer(
-            created["session_id"], "transfer-1", WRAPPED, "p2p"
+            created["session_id"],
+            "transfer-1",
+            WRAPPED,
+            "p2p",
+            sender_secret=created["sender_secret"],
         )
         monkeypatch.setattr(
             redis_service,
@@ -320,6 +365,7 @@ class TestPairingRoute:
             attached = client.post(
                 f"/api/v1/sender-sessions/{path}/attach",
                 json={"transfer_id": "transfer-1", "wrapped_key": WRAPPED},
+                headers={"X-Lynk-Sender-Secret": created["sender_secret"]},
             )
             collected = client.get(f"/api/v1/sender-sessions/{path}/key")
 
@@ -327,3 +373,15 @@ class TestPairingRoute:
         assert attached.json()["status"] == "attached"
         assert collected.status_code == 200
         assert collected.json()["wrapped_key"] == WRAPPED
+
+    async def test_the_route_refuses_attach_without_the_secret(self, fake_redis):
+        created = await _service().create_sender_session()
+        await _service().join_sender_session(created["code"], PK)
+
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/v1/sender-sessions/{created['session_id']}/attach",
+                json={"transfer_id": "transfer-1", "wrapped_key": WRAPPED},
+            )
+
+        assert response.status_code == 401
