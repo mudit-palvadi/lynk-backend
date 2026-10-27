@@ -91,6 +91,7 @@ def _post(file_name: str):
         "   ",
         " leading-space.txt",
         "trailing-space.txt ",
+        "report.txt:stream",
         "a" * (MAX_FILE_NAME_BYTES + 1),
         "é" * (MAX_FILE_NAME_BYTES // 2 + 1),
     ],
@@ -133,6 +134,7 @@ def test_validate_file_name_counts_bytes_not_characters():
         "folder\\file.txt",
         "/etc/passwd",
         "with\x00null.txt",
+        "report.txt:stream",
     ],
 )
 def test_create_transfer_refuses_an_unsafe_file_name(name):
