@@ -52,7 +52,17 @@ async def test_two_sender_collects_return_the_key_once(fake_redis):
     service = SenderService(redis_service)
     created = await service.create_sender_session()
     await service.join_sender_session(created["code"], "k" * 32)
-    await service.attach_transfer(created["session_id"], "transfer-1", "w" * 32)
+    await redis_service.set_transfer(
+        "transfer-1",
+        {"transfer_id": "transfer-1", "status": "uploading"},
+        300,
+    )
+    await service.attach_transfer(
+        created["session_id"],
+        "transfer-1",
+        "w" * 32,
+        sender_secret=created["sender_secret"],
+    )
 
     results = await asyncio.gather(
         service.collect_key(created["session_id"]),
