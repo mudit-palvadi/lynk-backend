@@ -36,21 +36,62 @@ class TransferService:
         return sum(f.file_size for f in transfer.files if f.status == "uploaded")
 
     async def _hold_landed_bytes(
-        self, transfer_id: str, before: int, after: int, until: int
-    ) -> None:
+        self, transfer: TransferModel, after: int, until: int
+    ) -> bool:
         """Hold capacity for the bytes that are really in storage (#50).
 
-        Only those bytes may outlive the short create-time reservation. Holding
-        the declared size instead let one address lock the whole cap with a
-        single 1-byte file, or with an extend and no upload at all. While the
-        reservation is still running both entries count, which only overstates
-        use. Once every file has landed the two entries are the same member.
+        Only those bytes may outlive the short create-time reservation. The
+        reservation itself stays until it expires or every file has landed, so
+        a 1-byte upload cannot free the rest of a large create. One lock
+        replaces every landed member for this transfer, and a complete that
+        no longer has a reservation is refused when it would pass the cap.
         """
         client = await self.redis.get_client()
-        if before and before != after:
-            await client.zrem(ACTIVE_TRANSFERS_KEY, f"{transfer_id}:{before}")
-        if after:
-            await client.zadd(ACTIVE_TRANSFERS_KEY, {f"{transfer_id}:{after}": until})
+        lock_key = f"{ACTIVE_TRANSFERS_KEY}:lock"
+        token = await self.redis.acquire_record_lock(client, lock_key)
+        try:
+            now = int(time.time())
+            rows = await client.zrange(ACTIVE_TRANSFERS_KEY, 0, -1, withscores=True)
+            prefix = f"{transfer.transfer_id}:"
+            reservation = f"{transfer.transfer_id}:{transfer.total_size}"
+            reservation_alive = False
+            own: list[str] = []
+            others = 0
+            for member, score in rows:
+                name = str(member)
+                if name.startswith(prefix):
+                    own.append(name)
+                    if (
+                        name == reservation
+                        and float(score)
+                        <= now + settings.UNFILLED_RESERVATION_SECONDS + 2
+                    ):
+                        reservation_alive = True
+                    continue
+                try:
+                    others += int(name.rsplit(":", 1)[1])
+                except ValueError:
+                    continue
+
+            keep_reservation = reservation_alive and after != transfer.total_size
+            if (
+                not keep_reservation
+                and others + after > settings.MAX_TOTAL_R2_CAP_BYTES
+            ):
+                return False
+            for name in own:
+                if keep_reservation and name == reservation:
+                    continue
+                await client.zrem(ACTIVE_TRANSFERS_KEY, name)
+
+            if after:
+                await client.zadd(
+                    ACTIVE_TRANSFERS_KEY,
+                    {f"{transfer.transfer_id}:{after}": until},
+                )
+            return True
+        finally:
+            await self.redis.release_record_lock(client, lock_key, token)
 
     async def _release_open_slot(self, client_ip: str | None, transfer_id: str) -> None:
         """Drop a transfer from its address's open-reservation set (#34)."""
@@ -231,7 +272,7 @@ class TransferService:
             target = next((f for f in fresh.files if f.file_id == file_id), None)
             if target is None:
                 raise InvalidInputException("File not found in transfer")
-            saved["before"] = self._landed_bytes(fresh)
+            saved["previous_status"] = target.status
             target.status = "uploaded"
             if all(f.status == "uploaded" for f in fresh.files):
                 fresh.status = "ready"
@@ -242,14 +283,30 @@ class TransferService:
         if updated is None:
             raise TransferNotFoundException()
         transfer = saved["transfer"]
-        landed_before = saved["before"]
-
-        await self._hold_landed_bytes(
-            transfer_id,
-            landed_before,
-            self._landed_bytes(transfer),
+        landed = self._landed_bytes(transfer)
+        accepted = await self._hold_landed_bytes(
+            transfer,
+            landed,
             int(datetime.fromisoformat(transfer.expires_at).timestamp()),
         )
+        if not accepted:
+            previous_status = saved["previous_status"]
+
+            def revert(data: dict) -> dict:
+                fresh = TransferModel.model_validate(data)
+                target = next((f for f in fresh.files if f.file_id == file_id), None)
+                if target is not None and target.status == "uploaded":
+                    target.status = previous_status
+                if fresh.status == "ready":
+                    fresh.status = "uploading"
+                return fresh.model_dump()
+
+            await self.redis.mutate_json(self.redis._get_key(transfer_id), revert)
+            await self.r2.delete_objects(transfer_id, [file_id])
+            raise LimitExceededException(
+                "High server traffic. Active storage capacity limit "
+                "reached. Please try again later."
+            )
         # A partly uploaded transfer keeps its open slot until the reservation
         # lapses, so completing one small file cannot free the slot for the
         # next create (#50).
@@ -338,7 +395,7 @@ class TransferService:
         # storage: extending an empty transfer must not hold its declared size.
         landed = self._landed_bytes(transfer)
         await self._hold_landed_bytes(
-            transfer_id, landed, landed, int(new_expires_at.timestamp())
+            transfer, landed, int(new_expires_at.timestamp())
         )
 
         return {
