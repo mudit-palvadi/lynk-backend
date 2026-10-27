@@ -7,6 +7,7 @@ Encodes the documented guarantees:
 - CORS restricted to explicit allowed origins (no wildcard + credentials).
 """
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -227,7 +228,13 @@ def test_extend_transfer_returns_extended_expiry(mock_env):
         "files": [],
     }
     mock_env["redis"].get_transfer = AsyncMock(return_value=transfer_data)
-    mock_env["redis"].extend_transfer = AsyncMock()
+
+    async def mutate_json(key, mutate, ttl_seconds=None):
+        updated = mutate(json.loads(json.dumps(transfer_data)))
+        mutate_json.ttl = ttl_seconds
+        return updated
+
+    mock_env["redis"].mutate_json = mutate_json
     mock_env["redis"].get_client = AsyncMock(return_value=AsyncMock())
 
     response = client.post(
@@ -240,7 +247,7 @@ def test_extend_transfer_returns_extended_expiry(mock_env):
     assert data["transfer_id"] == "tx_123"
     assert data["expires_in"] == settings.EXTENDED_TRANSFER_LIFETIME_SECONDS
 
-    mock_env["redis"].extend_transfer.assert_called_once()
+    assert mutate_json.ttl == settings.EXTENDED_TRANSFER_LIFETIME_SECONDS
 
 
 def test_extend_transfer_not_found(mock_env):

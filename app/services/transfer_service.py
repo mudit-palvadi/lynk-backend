@@ -221,13 +221,28 @@ class TransferService:
                 "Uploaded object size does not match the declared file size"
             )
 
-        landed_before = self._landed_bytes(transfer)
-        target_file.status = "uploaded"
+        # Re-read under the record lock. An extend that landed while R2 was
+        # being checked must not be replaced by this older copy.
+        saved: dict = {}
 
-        if all(f.status == "uploaded" for f in transfer.files):
-            transfer.status = "ready"
+        def mutate(data: dict) -> dict:
+            fresh = TransferModel.model_validate(data)
+            self._require_secret(sender_secret, fresh.sender_secret)
+            target = next((f for f in fresh.files if f.file_id == file_id), None)
+            if target is None:
+                raise InvalidInputException("File not found in transfer")
+            saved["before"] = self._landed_bytes(fresh)
+            target.status = "uploaded"
+            if all(f.status == "uploaded" for f in fresh.files):
+                fresh.status = "ready"
+            saved["transfer"] = fresh
+            return fresh.model_dump()
 
-        await self.redis.update_transfer(transfer_id, transfer.model_dump())
+        updated = await self.redis.mutate_json(self.redis._get_key(transfer_id), mutate)
+        if updated is None:
+            raise TransferNotFoundException()
+        transfer = saved["transfer"]
+        landed_before = saved["before"]
 
         await self._hold_landed_bytes(
             transfer_id,
@@ -241,9 +256,10 @@ class TransferService:
         if transfer.status == "ready":
             await self._release_open_slot(client_ip, transfer_id)
 
+        fresh_file = next(f for f in transfer.files if f.file_id == file_id)
         return {
             "file_id": file_id,
-            "status": target_file.status,
+            "status": fresh_file.status,
             "transfer_status": transfer.status,
         }
 
@@ -300,11 +316,23 @@ class TransferService:
 
         now = datetime.now(timezone.utc)
         new_expires_at = now + timedelta(seconds=settings.EXTENDED_TRANSFER_LIFETIME_SECONDS)
-        transfer.expires_at = new_expires_at.isoformat()
+        saved: dict = {}
 
-        await self.redis.extend_transfer(
-            transfer_id, transfer.model_dump(), settings.EXTENDED_TRANSFER_LIFETIME_SECONDS
+        def mutate(data: dict) -> dict:
+            fresh = TransferModel.model_validate(data)
+            self._require_secret(sender_secret, fresh.sender_secret)
+            fresh.expires_at = new_expires_at.isoformat()
+            saved["transfer"] = fresh
+            return fresh.model_dump()
+
+        updated = await self.redis.mutate_json(
+            self.redis._get_key(transfer_id),
+            mutate,
+            ttl_seconds=settings.EXTENDED_TRANSFER_LIFETIME_SECONDS,
         )
+        if updated is None:
+            raise TransferNotFoundException()
+        transfer = saved["transfer"]
 
         # The record lives longer, but capacity is held only for what is in
         # storage: extending an empty transfer must not hold its declared size.

@@ -2,14 +2,18 @@
 
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import fakeredis.aioredis
 import pytest
 
+from app.core.config import settings
 from app.core.exceptions import TransferNotReadyException
+from app.services.r2_service import R2Service
 from app.services.receiver_service import ReceiverService
 from app.services.redis_service import redis_service
 from app.services.sender_service import SenderService
+from app.services.transfer_service import TransferService
 
 pytestmark = pytest.mark.anyio
 
@@ -89,3 +93,33 @@ async def test_two_receiver_reads_return_the_key_once(fake_redis):
 
     delivered = [item["wrapped_key"] for item in results if item["wrapped_key"]]
     assert delivered == ["w" * 32]
+
+
+async def test_extend_keeps_a_file_completed_at_the_same_time(fake_redis, monkeypatch):
+    monkeypatch.setattr(
+        R2Service,
+        "generate_upload_url",
+        AsyncMock(return_value="https://r2.mock/upload"),
+    )
+    monkeypatch.setattr(R2Service, "verify_file_exists", AsyncMock(return_value=4096))
+    service = TransferService(redis_service=redis_service, r2_service=R2Service())
+    created = await service.create_transfer(
+        [{"file_name": "a.txt", "file_size": 4096, "content_type": "text/plain"}]
+    )
+
+    await asyncio.gather(
+        service.complete_file(
+            created["transfer_id"],
+            created["files"][0]["file_id"],
+            sender_secret=created["sender_secret"],
+        ),
+        service.extend_transfer(
+            created["transfer_id"], sender_secret=created["sender_secret"]
+        ),
+    )
+
+    stored = json.loads(await fake_redis.get(f"lynk:transfer:{created['transfer_id']}"))
+    assert stored["files"][0]["status"] == "uploaded"
+    assert stored["status"] == "ready"
+    ttl = await fake_redis.ttl(f"lynk:transfer:{created['transfer_id']}")
+    assert ttl > settings.TRANSFER_LIFETIME_SECONDS
