@@ -61,12 +61,18 @@ def _is_cloudflare_address(ip: str) -> bool:
     return False
 
 
-def _is_ip_address(value: str) -> bool:
+def _canonical_address(value: str, *, allow_scope: bool = False) -> str | None:
+    """Normalize aliases without trusting caller-supplied IPv6 zone identifiers."""
+    if "%" in value:
+        if not allow_scope:
+            return None
+        value = value.split("%", 1)[0]
     try:
-        ipaddress.ip_address(value)
+        address = ipaddress.ip_address(value)
     except ValueError:
-        return False
-    return True
+        return None
+    mapped = getattr(address, "ipv4_mapped", None)
+    return str(mapped if mapped is not None else address)
 
 
 def resolve_client_address(
@@ -86,13 +92,15 @@ def resolve_client_address(
     port) has no such guarantee, so it is attributed to the peer instead.
     """
     if peer and _is_cloudflare_address(peer):
-        forwarded = (connecting_ip or "").strip()
-        if _is_ip_address(forwarded):
+        forwarded = _canonical_address((connecting_ip or "").strip())
+        if forwarded is not None:
             configured = settings.CLOUDFLARE_EDGE_SECRET
             if not configured or secrets_match(edge_secret, configured):
                 return forwarded
 
-    return peer or "unknown"
+    if not peer:
+        return "unknown"
+    return _canonical_address(peer, allow_scope=True) or peer
 
 
 def resolve_client_ip(request: Request) -> str:
@@ -130,6 +138,17 @@ class RateLimiter:
         # A client scope is one address. A global scope is one counter for
         # every address, so many addresses cannot share out a guessable code.
         identity = "global" if self.scope == "global" else resolve_client_ip(request)
+        if self.scope == "ipv6-prefix":
+            try:
+                address = ipaddress.ip_address(identity)
+            except ValueError:
+                return
+            if address.version != 6:
+                return
+            network = ipaddress.ip_network(
+                (address, settings.RATE_LIMIT_IPV6_PREFIX_LENGTH), strict=False
+            )
+            identity = f"ipv6:{network.with_prefixlen}"
         key = f"lynk:rate:{self.bucket}:{identity}"
 
         try:
