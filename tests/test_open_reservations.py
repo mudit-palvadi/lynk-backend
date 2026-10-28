@@ -3,8 +3,9 @@
 Time-limiting a reservation stopped an abandoned create from pinning storage
 for the whole transfer lifetime, but one address could still open as many as
 it liked before any of them lapsed. The address now carries a set of
-unfinished transfers and is refused the sixth; finishing or cancelling a
-transfer, or letting its reservation lapse, frees the slot.
+unfinished transfers and is refused the sixth. Finishing a transfer, or
+letting its reservation lapse, frees the slot. Cancelling does not: the
+upload URL cannot be revoked, so the slot stays until that signature expires.
 """
 
 import time
@@ -18,7 +19,7 @@ from app.core.config import settings
 from app.core.exceptions import RateLimitExceededException
 from app.services.r2_service import R2Service
 from app.services.redis_service import redis_service
-from app.services.transfer_service import TransferService
+from app.services.transfer_service import ACTIVE_TRANSFERS_KEY, TransferService
 
 pytestmark = pytest.mark.anyio
 
@@ -120,13 +121,16 @@ class TestSlotRelease:
         fresh = await svc.create_transfer(_payload(), client_ip=ADDRESS)
         assert fresh["transfer_id"]
 
-    async def test_cancelling_frees_the_slot(self, fake_redis, monkeypatch):
+    async def test_cancelling_keeps_the_slot_until_the_upload_url_expires(
+        self, fake_redis, monkeypatch
+    ):
         svc = _service()
         delete_objects = AsyncMock()
         monkeypatch.setattr(svc.r2, "delete_objects", delete_objects)
         created = await _fill(svc)
 
         first = created[0]
+        before = int(time.time())
         await svc.cancel_transfer(
             first["transfer_id"],
             sender_secret=first["sender_secret"],
@@ -136,10 +140,54 @@ class TestSlotRelease:
             first["transfer_id"], [first["files"][0]["file_id"]]
         )
 
-        assert await fake_redis.zcard(f"lynk:open:{ADDRESS}") == (
-            settings.MAX_OPEN_RESERVATIONS_PER_CLIENT - 1
+        open_key = f"lynk:open:{ADDRESS}"
+        assert await fake_redis.zcard(open_key) == settings.MAX_OPEN_RESERVATIONS_PER_CLIENT
+        score = float(await fake_redis.zscore(open_key, first["transfer_id"]))
+        assert before + settings.UPLOAD_URL_LIFETIME_SECONDS - 2 <= score
+        assert score <= before + settings.UPLOAD_URL_LIFETIME_SECONDS + 2
+        with pytest.raises(RateLimitExceededException):
+            await svc.create_transfer(_payload(), client_ip=ADDRESS)
+
+        await fake_redis.zadd(open_key, {first["transfer_id"]: int(time.time()) - 1})
+        fresh = await svc.create_transfer(_payload(), client_ip=ADDRESS)
+        assert fresh["transfer_id"]
+
+    async def test_a_cancel_from_another_address_keeps_the_creator_slot(
+        self, fake_redis, monkeypatch
+    ):
+        svc = _service()
+        monkeypatch.setattr(svc.r2, "delete_objects", AsyncMock())
+        created = await svc.create_transfer(_payload(), client_ip=ADDRESS)
+
+        await svc.cancel_transfer(
+            created["transfer_id"],
+            sender_secret=created["sender_secret"],
+            client_ip=OTHER,
         )
-        assert await svc.create_transfer(_payload(), client_ip=ADDRESS)
+
+        assert await fake_redis.zcard(f"lynk:open:{ADDRESS}") == 1
+        assert await fake_redis.zcard(f"lynk:open:{OTHER}") == 0
+        held = await fake_redis.zrange(ACTIVE_TRANSFERS_KEY, 0, -1)
+        assert held == [f"{created['transfer_id']}:4096"]
+
+    async def test_a_later_create_does_not_shorten_a_cancelled_slot(
+        self, fake_redis, monkeypatch
+    ):
+        svc = _service()
+        monkeypatch.setattr(svc.r2, "delete_objects", AsyncMock())
+        cancelled = await svc.create_transfer(_payload(), client_ip=ADDRESS)
+        await svc.cancel_transfer(
+            cancelled["transfer_id"],
+            sender_secret=cancelled["sender_secret"],
+            client_ip=ADDRESS,
+        )
+
+        await svc.create_transfer(_payload(), client_ip=ADDRESS)
+
+        ttl = int(await fake_redis.ttl(f"lynk:open:{ADDRESS}"))
+        assert ttl >= settings.UPLOAD_URL_LIFETIME_SECONDS
+        score = float(await fake_redis.zscore(f"lynk:open:{ADDRESS}", cancelled["transfer_id"]))
+        assert score >= int(time.time()) + settings.UPLOAD_URL_LIFETIME_SECONDS - 5
 
     async def test_a_lapsed_reservation_frees_the_slot(self, fake_redis):
         svc = _service()
