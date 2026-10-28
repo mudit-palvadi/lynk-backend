@@ -145,38 +145,6 @@ class TransferService:
         if total_size > settings.MAX_TOTAL_TRANSFER_SIZE:
             raise LimitExceededException("Total transfer size limit exceeded")
 
-        client = await self.redis.get_client()
-        current_time = int(time.time())
-
-        # Two minutes of reservation and a five-a-minute limiter still let one
-        # address hold ten creates in flight, which is enough to fill the whole
-        # capacity cap and lock everyone else out (#34).
-        open_key = f"lynk:open:{client_ip}" if client_ip else None
-        if open_key:
-            await client.zremrangebyscore(open_key, "-inf", current_time)
-            open_count = int(await client.zcard(open_key))
-            if open_count >= settings.MAX_OPEN_RESERVATIONS_PER_CLIENT:
-                raise RateLimitExceededException(
-                    "Too many unfinished transfers from this address. "
-                    "Finish or cancel one and try again."
-                )
-
-        await client.zremrangebyscore(ACTIVE_TRANSFERS_KEY, "-inf", current_time)
-        active_items = await client.zrange(ACTIVE_TRANSFERS_KEY, 0, -1)
-        current_active_size = 0
-        for item in active_items:
-            try:
-                _, size_str = item.split(":")
-                current_active_size += int(size_str)
-            except ValueError:
-                continue
-
-        if current_active_size + total_size > settings.MAX_TOTAL_R2_CAP_BYTES:
-            raise LimitExceededException(
-                "High server traffic. Active storage capacity limit "
-                "reached. Please try again later."
-            )
-
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=settings.TRANSFER_LIFETIME_SECONDS)
         sender_secret = secrets.token_urlsafe(32)
@@ -194,22 +162,59 @@ class TransferService:
             files=file_models,
         )
 
-        await self.redis.set_transfer(
-            transfer_id, transfer.model_dump(), settings.TRANSFER_LIFETIME_SECONDS
-        )
+        client = await self.redis.get_client()
+        # The cap and the per-address slot are decided and recorded together.
+        # Two creates that each read the zset before either one wrote it would
+        # both pass and the cap would be exceeded.
+        lock_key = f"{ACTIVE_TRANSFERS_KEY}:lock"
+        token = await self.redis.acquire_record_lock(client, lock_key)
+        try:
+            current_time = int(time.time())
+            open_key = f"lynk:open:{client_ip}" if client_ip else None
+            if open_key:
+                await client.zremrangebyscore(open_key, "-inf", current_time)
+                open_count = int(await client.zcard(open_key))
+                if open_count >= settings.MAX_OPEN_RESERVATIONS_PER_CLIENT:
+                    raise RateLimitExceededException(
+                        "Too many unfinished transfers from this address. "
+                        "Finish or cancel one and try again."
+                    )
 
-        # Reserve the declared size, but only for a couple of minutes: a
-        # create that never uploads must not hold capacity for the whole
-        # transfer lifetime (#34). After that only landed bytes are held (#50).
-        reservation_until = current_time + settings.UNFILLED_RESERVATION_SECONDS
-        await client.zadd(
-            ACTIVE_TRANSFERS_KEY, {f"{transfer_id}:{total_size}": reservation_until}
-        )
-        if open_key:
-            await client.zadd(open_key, {transfer_id: reservation_until})
-            await client.expire(
-                open_key, settings.UNFILLED_RESERVATION_SECONDS * 2
+            await client.zremrangebyscore(ACTIVE_TRANSFERS_KEY, "-inf", current_time)
+            active_items = await client.zrange(ACTIVE_TRANSFERS_KEY, 0, -1)
+            current_active_size = 0
+            for item in active_items:
+                try:
+                    _, size_str = item.split(":")
+                    current_active_size += int(size_str)
+                except ValueError:
+                    continue
+
+            if current_active_size + total_size > settings.MAX_TOTAL_R2_CAP_BYTES:
+                raise LimitExceededException(
+                    "High server traffic. Active storage capacity limit "
+                    "reached. Please try again later."
+                )
+
+            await self.redis.set_transfer(
+                transfer_id, transfer.model_dump(), settings.TRANSFER_LIFETIME_SECONDS
             )
+
+            # Reserve the declared size, but only for a couple of minutes: a
+            # create that never uploads must not hold capacity for the whole
+            # transfer lifetime (#34). After that only landed bytes are held (#50).
+            reservation_until = current_time + settings.UNFILLED_RESERVATION_SECONDS
+            await client.zadd(
+                ACTIVE_TRANSFERS_KEY,
+                {f"{transfer_id}:{total_size}": reservation_until},
+            )
+            if open_key:
+                await client.zadd(open_key, {transfer_id: reservation_until})
+                await client.expire(
+                    open_key, settings.UNFILLED_RESERVATION_SECONDS * 2
+                )
+        finally:
+            await self.redis.release_record_lock(client, lock_key, token)
 
         upload_files = []
         for f in file_models:
