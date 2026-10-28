@@ -18,6 +18,7 @@ from app.services.transfer_service import TransferService
 
 mock_redis = AsyncMock()
 mock_redis.incr = AsyncMock(return_value=1)
+mock_redis.eval = AsyncMock(return_value=[1, 60000])
 mock_redis.get_client = AsyncMock(return_value=mock_redis)
 mock_redis.zrange = AsyncMock(return_value=[])
 redis_service.get_client = AsyncMock(return_value=mock_redis)
@@ -53,6 +54,7 @@ def use_mock_transfer_service():
 def run_around_tests():
     mock_redis.reset_mock()
     mock_redis.incr = AsyncMock(return_value=1)
+    mock_redis.eval = AsyncMock(return_value=[1, 60000])
     mock_redis.get_client = AsyncMock(return_value=mock_redis)
     mock_redis.zrange = AsyncMock(return_value=[])
     mock_r2.reset_mock()

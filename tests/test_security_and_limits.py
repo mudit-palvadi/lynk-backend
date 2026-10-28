@@ -26,6 +26,7 @@ def mock_env(monkeypatch):
     """Isolated async-mock redis/r2 wired into fresh service instances."""
     mock_redis = AsyncMock()
     mock_redis.incr = AsyncMock(return_value=1)
+    mock_redis.eval = AsyncMock(return_value=[1, 60000])
     mock_r2 = AsyncMock()
 
     receiver_service = ReceiverService(redis_service=mock_redis)

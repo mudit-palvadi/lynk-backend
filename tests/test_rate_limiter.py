@@ -28,7 +28,7 @@ CLIENT_IP_2 = "198.51.100.23"
 
 
 class _RecordingRedis:
-    """Redis double that records the keys and TTL calls it receives."""
+    """Redis boundary double; real script semantics are tested with fakeredis."""
 
     def __init__(self, count: int = 1) -> None:
         self.count = count
@@ -36,15 +36,13 @@ class _RecordingRedis:
         self.expire_calls: list[tuple[str, int, bool]] = []
         self.incr_error: Exception | None = None
 
-    async def incr(self, key: str) -> int:
+    async def eval(self, script, key_count, key, window_ms, limit):
+        assert key_count == 1
         self.incr_keys.append(key)
         if self.incr_error is not None:
             raise self.incr_error
-        return self.count
-
-    async def expire(self, key: str, seconds: int, nx: bool = False) -> bool:
-        self.expire_calls.append((key, seconds, nx))
-        return True
+        self.expire_calls.append((key, window_ms))
+        return [self.count, window_ms]
 
 
 class _FakeClientInfo:
@@ -141,17 +139,16 @@ def test_different_buckets_do_not_share_a_window(fake_redis) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_window_is_set_atomically_with_nx(fake_redis) -> None:
-    """``nx=True`` sets the TTL only when the key has none, so a burst of
-    requests cannot keep pushing the expiry out."""
+def test_window_is_part_of_the_atomic_counter_operation(fake_redis) -> None:
+    """Each request supplies its window in the same EVAL as its counter."""
     limiter = RateLimiter(limit=5, window_seconds=60, bucket="transfer-create")
 
     asyncio.run(_call(limiter, _FakeRequest()))
     asyncio.run(_call(limiter, _FakeRequest()))
 
     assert fake_redis.expire_calls == [
-        (f"lynk:rate:transfer-create:{CLIENT_IP}", 60, True),
-        (f"lynk:rate:transfer-create:{CLIENT_IP}", 60, True),
+        (f"lynk:rate:transfer-create:{CLIENT_IP}", 60000),
+        (f"lynk:rate:transfer-create:{CLIENT_IP}", 60000),
     ]
 
 

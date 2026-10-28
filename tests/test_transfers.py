@@ -10,6 +10,7 @@ from app.services.redis_service import redis_service
 
 mock_redis = AsyncMock()
 mock_redis.incr = AsyncMock(return_value=1)
+mock_redis.eval = AsyncMock(return_value=[1, 60000])
 mock_redis.get_client = AsyncMock(return_value=mock_redis)
 mock_redis.zrange = AsyncMock(return_value=[])
 redis_service.get_client = AsyncMock(return_value=mock_redis)
@@ -31,6 +32,7 @@ client = TestClient(app)
 def run_around_tests():
     mock_redis.reset_mock()
     mock_redis.incr = AsyncMock(return_value=1)
+    mock_redis.eval = AsyncMock(return_value=[1, 60000])
     mock_redis.get_client = AsyncMock(return_value=mock_redis)
     mock_redis.zrange = AsyncMock(return_value=[])
     mock_r2.reset_mock()
@@ -470,7 +472,7 @@ def test_create_transfer_storage_cap_exceeded():
 
 
 def test_create_transfer_rate_limiting():
-    mock_redis.incr = AsyncMock(return_value=6)  # Exceeds rate limit of 5
+    mock_redis.eval = AsyncMock(return_value=[6, 60000])  # Exceeds rate limit of 5
 
     payload = {
         "files": [{"file_name": "photo.jpg", "file_size": 100, "content_type": "image/jpeg"}]
