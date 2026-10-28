@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Header, status
 
-from app.core.security import RECEIVER_SECRET_HEADER, RateLimiter
+from app.core.security import RECEIVER_SECRET_HEADER, SENDER_SECRET_HEADER, RateLimiter
 from app.schemas.sender import (
     SenderSessionAttachRequest,
     SenderSessionAttachResponse,
@@ -60,6 +60,15 @@ async def get_sender_session(
     service: SenderService = Depends(get_sender_service),
 ):
     return await service.get_sender_session(session_id)
+
+
+@router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_sender_session(
+    session_id: str,
+    x_lynk_sender_secret: str | None = Header(default=None, alias=SENDER_SECRET_HEADER),
+    service: SenderService = Depends(get_sender_service),
+):
+    await service.cancel_sender_session(session_id, x_lynk_sender_secret)
 
 
 @router.post("/{session_id}/attach", response_model=SenderSessionAttachResponse)

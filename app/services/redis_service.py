@@ -368,13 +368,33 @@ class RedisService:
             raise ServiceUnavailableException("Failed to update sender session")
 
     async def delete_sender_session(self, session_id: str) -> None:
+        """Remove a sender session while holding the same lock as attach.
+
+        An attach that already read the session then sees a missing record
+        and stops, instead of writing the wrapped key back after this delete.
+        """
         client = await self.get_client()
         key = self._get_sender_key(session_id)
+        token = None
         try:
+            token = await self.acquire_record_lock(client, f"{key}:lock")
+            raw = await client.get(key)
+            if raw:
+                try:
+                    code = json.loads(raw).get("code")
+                except (TypeError, ValueError):
+                    code = None
+                if isinstance(code, str) and code:
+                    await client.delete(self._get_sender_code_key(code))
             await client.delete(key)
+        except ServiceUnavailableException:
+            raise
         except Exception as e:
             logger.error(f"Redis delete_sender_session failed: {e}")
             raise ServiceUnavailableException("Failed to delete sender session")
+        finally:
+            if token is not None:
+                await self.release_record_lock(client, f"{key}:lock", token)
 
     async def close_pool(self) -> None:
         if self.pool:
