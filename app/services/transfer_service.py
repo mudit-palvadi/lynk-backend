@@ -395,6 +395,12 @@ class TransferService:
 
         now = datetime.now(timezone.utc)
         new_expires_at = now + timedelta(seconds=settings.EXTENDED_TRANSFER_LIFETIME_SECONDS)
+        key = self.redis._get_key(transfer_id)
+        client = await self.redis.get_client()
+        previous_ttl = int(await client.ttl(key))
+        previous_expires_at = transfer.expires_at
+        if previous_ttl <= 0:
+            raise TransferNotFoundException()
         saved: dict = {}
 
         def mutate(data: dict) -> dict:
@@ -405,7 +411,7 @@ class TransferService:
             return fresh.model_dump()
 
         updated = await self.redis.mutate_json(
-            self.redis._get_key(transfer_id),
+            key,
             mutate,
             ttl_seconds=settings.EXTENDED_TRANSFER_LIFETIME_SECONDS,
         )
@@ -416,9 +422,25 @@ class TransferService:
         # The record lives longer, but capacity is held only for what is in
         # storage: extending an empty transfer must not hold its declared size.
         landed = self._landed_bytes(transfer)
-        await self._hold_landed_bytes(
+        held = await self._hold_landed_bytes(
             transfer, landed, int(new_expires_at.timestamp())
         )
+        if held is None:
+            raise TransferNotFoundException()
+        if not held:
+            # The longer record was written before the cap answered. Put the
+            # previous lifetime back, or the objects outlive their cap entry.
+
+            def restore(data: dict) -> dict:
+                fresh = TransferModel.model_validate(data)
+                fresh.expires_at = previous_expires_at
+                return fresh.model_dump()
+
+            await self.redis.mutate_json(key, restore, ttl_seconds=previous_ttl)
+            raise LimitExceededException(
+                "High server traffic. Active storage capacity limit "
+                "reached. Please try again later."
+            )
 
         return {
             "transfer_id": transfer.transfer_id,

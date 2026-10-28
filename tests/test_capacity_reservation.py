@@ -182,6 +182,28 @@ class TestOnlyLandedBytesOutliveTheReservation:
         # Still the short create-time reservation, not the 30-minute extension.
         assert members[0][1] <= before + settings.UNFILLED_RESERVATION_SECONDS + 2
 
+    async def test_a_refused_extend_keeps_the_original_lifetime(self, fake_redis):
+        svc = TransferService(redis_service=redis_service, r2_service=R2Service())
+        created = await svc.create_transfer(_two_files())
+        tid = created["transfer_id"]
+        key = redis_service._get_key(tid)
+        before = await redis_service.get_transfer(tid)
+        now = int(time.time())
+        await fake_redis.zadd(KEY, {f"{tid}:50000001": now - 5})
+        await fake_redis.zadd(
+            KEY,
+            {f"other:{settings.MAX_TOTAL_R2_CAP_BYTES + 1}": now + 600},
+        )
+
+        with pytest.raises(LimitExceededException):
+            await svc.extend_transfer(tid, sender_secret=created["sender_secret"])
+
+        stored = await redis_service.get_transfer(tid)
+        assert stored["expires_at"] == before["expires_at"]
+        ttl = int(await fake_redis.ttl(key))
+        assert 0 < ttl <= settings.TRANSFER_LIFETIME_SECONDS
+        assert ttl < settings.EXTENDED_TRANSFER_LIFETIME_SECONDS
+
     async def test_one_small_file_holds_only_its_own_bytes(self, fake_redis, monkeypatch):
         _verify_as_declared(monkeypatch)
         svc = TransferService(redis_service=redis_service, r2_service=R2Service())
