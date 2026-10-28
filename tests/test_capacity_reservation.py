@@ -8,6 +8,7 @@ lapses after a couple of minutes unless a file actually lands, and a real
 upload holds capacity until the transfer expires.
 """
 
+import asyncio
 import time
 from datetime import datetime
 from unittest.mock import AsyncMock
@@ -88,6 +89,36 @@ class TestUnfilledReservation:
         remaining = await fake_redis.zrange(KEY, 0, -1)
         assert stale_member not in remaining
         assert f"{fresh['transfer_id']}:4096" in remaining
+
+    async def test_overlapping_creates_cannot_share_one_slot_of_room(
+        self, fake_redis, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "MAX_TOTAL_R2_CAP_BYTES", 5000)
+        svc = TransferService(redis_service=redis_service, r2_service=R2Service())
+        started = asyncio.Event()
+        release = asyncio.Event()
+        releases = 0
+        real_release = redis_service.release_record_lock
+
+        async def stall(client, lock_key, token):
+            nonlocal releases
+            if lock_key == f"{KEY}:lock":
+                releases += 1
+                if releases == 1:
+                    started.set()
+                    await release.wait()
+            await real_release(client, lock_key, token)
+
+        monkeypatch.setattr(redis_service, "release_record_lock", stall)
+        first = asyncio.create_task(svc.create_transfer(_payload()))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        second = asyncio.create_task(svc.create_transfer(_payload()))
+        await asyncio.sleep(0.05)
+        release.set()
+        results = await asyncio.gather(first, second, return_exceptions=True)
+
+        assert sum(isinstance(item, LimitExceededException) for item in results) == 1
+        assert sum(isinstance(item, dict) for item in results) == 1
 
 
 class TestFilledReservation:
