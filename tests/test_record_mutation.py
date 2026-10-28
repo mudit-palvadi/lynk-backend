@@ -237,3 +237,51 @@ async def test_extend_keeps_a_file_completed_at_the_same_time(fake_redis, monkey
     assert stored["status"] == "ready"
     ttl = await fake_redis.ttl(f"lynk:transfer:{created['transfer_id']}")
     assert ttl > settings.TRANSFER_LIFETIME_SECONDS
+
+
+async def test_a_cancel_during_attach_does_not_restore_the_session(
+    fake_redis, monkeypatch
+):
+    service = ReceiverService(redis_service)
+    created = await service.create_receiver_session()
+    session_id = created["session_id"]
+    await fake_redis.set(
+        "lynk:transfer:t-1",
+        json.dumps(
+            {
+                "transfer_id": "t-1",
+                "status": "ready",
+                "created_at": "2026-10-27T00:00:00+00:00",
+                "expires_at": "2026-10-27T00:10:00+00:00",
+                "total_files": 1,
+                "total_size": 1,
+                "files": [],
+            }
+        ),
+        ex=60,
+    )
+    held = asyncio.Event()
+    resume = asyncio.Event()
+    original = redis_service.acquire_record_lock
+
+    async def pause_the_attach(client, lock_key):
+        token = await original(client, lock_key)
+        if lock_key.endswith(":lock") and not pause_the_attach.used:
+            pause_the_attach.used = True
+            held.set()
+            await resume.wait()
+        return token
+
+    pause_the_attach.used = False
+    monkeypatch.setattr(redis_service, "acquire_record_lock", pause_the_attach)
+
+    attach_task = asyncio.create_task(
+        service.attach_transfer(session_id, "t-1", "w" * 32)
+    )
+    await asyncio.wait_for(held.wait(), timeout=2)
+    cancel_task = asyncio.create_task(service.cancel_receiver_session(session_id))
+    await asyncio.sleep(0.05)
+    resume.set()
+    await asyncio.gather(attach_task, cancel_task)
+
+    assert await fake_redis.get(redis_service._get_receiver_key(session_id)) is None
