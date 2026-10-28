@@ -41,7 +41,7 @@ class TransferService:
 
     async def _hold_landed_bytes(
         self, transfer: TransferModel, after: int, until: int
-    ) -> bool:
+    ) -> bool | None:
         """Hold capacity for the bytes that are really in storage (#50).
 
         Only those bytes may outlive the short create-time reservation. The
@@ -49,11 +49,14 @@ class TransferService:
         a 1-byte upload cannot free the rest of a large create. One lock
         replaces every landed member for this transfer, and a complete that
         no longer has a reservation is refused when it would pass the cap.
+        None means the transfer record is already gone, so nothing is written.
         """
         client = await self.redis.get_client()
         lock_key = f"{ACTIVE_TRANSFERS_KEY}:lock"
         token = await self.redis.acquire_record_lock(client, lock_key)
         try:
+            if not await self.redis.get_transfer(transfer.transfer_id):
+                return None
             now = int(time.time())
             rows = await client.zrange(ACTIVE_TRANSFERS_KEY, 0, -1, withscores=True)
             prefix = f"{transfer.transfer_id}:"
@@ -303,6 +306,8 @@ class TransferService:
             landed,
             int(datetime.fromisoformat(transfer.expires_at).timestamp()),
         )
+        if accepted is None:
+            raise TransferNotFoundException()
         if not accepted:
             previous_status = saved["previous_status"]
 
@@ -476,11 +481,20 @@ class TransferService:
         await self.redis.delete_transfer(transfer_id)
 
         client = await self.redis.get_client()
-        await client.zrem(
-            ACTIVE_TRANSFERS_KEY,
-            f"{transfer_id}:{transfer.total_size}",
-            f"{transfer_id}:{self._landed_bytes(transfer)}",
-        )
+        lock_key = f"{ACTIVE_TRANSFERS_KEY}:lock"
+        token = await self.redis.acquire_record_lock(client, lock_key)
+        try:
+            # A completion can add a landed member after this snapshot was
+            # read. Every member for this transfer goes, not only the two
+            # names known before the delete.
+            prefix = f"{transfer_id}:"
+            rows = await client.zrange(ACTIVE_TRANSFERS_KEY, 0, -1)
+            for member in rows:
+                name = str(member)
+                if name.startswith(prefix):
+                    await client.zrem(ACTIVE_TRANSFERS_KEY, name)
+        finally:
+            await self.redis.release_record_lock(client, lock_key, token)
         await self._release_open_slot(client_ip, transfer_id)
 
         file_ids = [f.file_id for f in transfer.files]
