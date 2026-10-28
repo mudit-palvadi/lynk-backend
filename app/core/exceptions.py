@@ -3,9 +3,12 @@ from fastapi.responses import JSONResponse
 
 
 class LynkException(Exception):
-    def __init__(self, message: str, status_code: int = 500):
+    def __init__(
+        self, message: str, status_code: int = 500, *, headers: dict[str, str] | None = None
+    ):
         self.message = message
         self.status_code = status_code
+        self.headers = headers
         super().__init__(self.message)
 
 
@@ -35,8 +38,9 @@ class LimitExceededException(LynkException):
 
 
 class RateLimitExceededException(LynkException):
-    def __init__(self, message: str = "Rate limit exceeded"):
-        super().__init__(message, status_code=429)
+    def __init__(self, message: str = "Rate limit exceeded", *, retry_after: int | None = None):
+        headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
+        super().__init__(message, status_code=429, headers=headers)
 
 
 class ServiceUnavailableException(LynkException):
@@ -49,4 +53,6 @@ def register_exception_handlers(app: FastAPI):
 
     @app.exception_handler(LynkException)
     async def lynk_exception_handler(request: Request, exc: LynkException):
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+        return JSONResponse(
+            status_code=exc.status_code, content={"detail": exc.message}, headers=exc.headers
+        )

@@ -24,6 +24,7 @@ def _allow_everything_redis() -> AsyncMock:
     """A Redis double that answers every command and never rate-limits."""
     fake = AsyncMock()
     fake.incr = AsyncMock(return_value=1)
+    fake.eval = AsyncMock(return_value=[1, 60000])
     fake.expire = AsyncMock(return_value=True)
     return fake
 

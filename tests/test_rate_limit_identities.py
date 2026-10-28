@@ -62,13 +62,11 @@ class _Counters:
         self.counts = Counter()
         self.expiries = []
 
-    async def incr(self, key):
-        self.counts[key] += 1
-        return self.counts[key]
-
-    async def expire(self, key, seconds, nx=False):
-        self.expiries.append((key, seconds, nx))
-        return True
+    async def eval(self, script, key_count, key, window_ms, limit):
+        assert key_count == 1
+        self.counts[key] = min(self.counts[key] + 1, limit + 1)
+        self.expiries.append((key, window_ms))
+        return [self.counts[key], window_ms]
 
 
 def _request(address):
@@ -115,7 +113,7 @@ def test_rotated_ipv6_addresses_share_an_additional_prefix_budget(counters, monk
         "lynk:rate:identity-test:ipv6:2001:db8:1234:5678::/64": 3,
         "lynk:rate:identity-test:ipv6:2001:db8:1234:5679::/64": 1,
     }
-    assert all(seconds == 60 and nx for _, seconds, nx in counters.expiries)
+    assert all(window_ms == 60000 for _, window_ms in counters.expiries)
 
 
 def test_prefix_length_is_configurable(counters, monkeypatch):

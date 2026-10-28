@@ -9,6 +9,7 @@ bucket (the limit would never fire).
 
 import hashlib
 import ipaddress
+import math
 import secrets
 
 from fastapi import Request
@@ -16,6 +17,23 @@ from fastapi import Request
 from app.core.config import settings
 from app.core.exceptions import RateLimitExceededException, ServiceUnavailableException
 from app.services.redis_service import redis_service
+
+# Redis executes the counter and its fixed-window expiry as one operation.
+# Saturating at limit + 1 bounds the stored value even during sustained abuse.
+_RATE_LIMIT_SCRIPT = """
+local window = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+if count < limit + 1 then
+    count = redis.call('INCR', KEYS[1])
+end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 or ttl > window then
+    redis.call('PEXPIRE', KEYS[1], window)
+    ttl = window
+end
+return {count, ttl}
+"""
 
 # Parsed once at import: the list is small and static, and the limiter runs on
 # every protected request.
@@ -133,6 +151,10 @@ class RateLimiter:
         self.window_seconds = window_seconds
         self.bucket = bucket
         self.scope = scope
+        if type(limit) is not int or limit < 1:
+            raise ValueError("Rate limit must be a positive integer")
+        if type(window_seconds) is not int or window_seconds < 1:
+            raise ValueError("Rate limit window must be a positive integer")
 
     async def __call__(self, request: Request) -> None:
         # A client scope is one address. A global scope is one counter for
@@ -153,11 +175,19 @@ class RateLimiter:
 
         try:
             client = await redis_service.get_client()
-            count = await client.incr(key)
-            # nx=True sets the expiry only when the key has none, so the window
-            # starts at the first request and a failure between INCR and EXPIRE
-            # cannot leave a bucket that never expires.
-            await client.expire(key, self.window_seconds, nx=True)
+            window_ms = self.window_seconds * 1000
+            result = await client.eval(
+                _RATE_LIMIT_SCRIPT, 1, key, window_ms, self.limit
+            )
+            if (
+                not isinstance(result, (list, tuple))
+                or len(result) != 2
+                or any(type(value) is not int for value in result)
+            ):
+                raise ValueError("Invalid rate limiter response")
+            count, remaining_ms = result
+            if not 1 <= count <= self.limit + 1 or not 0 <= remaining_ms <= window_ms:
+                raise ValueError("Invalid rate limiter response")
         except ServiceUnavailableException:
             # The Redis pool is missing: surface it as the same 503 the rest
             # of the API returns for storage problems.
@@ -170,5 +200,6 @@ class RateLimiter:
         if count > self.limit:
             raise RateLimitExceededException(
                 f"Rate limit exceeded. Maximum {self.limit} requests per "
-                f"{self.window_seconds}s."
+                f"{self.window_seconds}s.",
+                retry_after=max(1, math.ceil(remaining_ms / 1000)),
             )

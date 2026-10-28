@@ -14,5 +14,6 @@ pluggy==1.6.0
 Pygments==2.20.0
 
 # In-memory Redis used by the cloud/P2P integration tests.
-fakeredis==2.37.1
+fakeredis[lua]==2.37.1
+lupa==2.8
 sortedcontainers==2.4.0
