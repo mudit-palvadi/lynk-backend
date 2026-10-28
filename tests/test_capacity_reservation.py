@@ -262,9 +262,13 @@ class TestOnlyLandedBytesOutliveTheReservation:
             transfer_id=tid, file_id=tiny["file_id"], sender_secret=created["sender_secret"]
         )
 
+        before = int(time.time())
         await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
 
-        assert await fake_redis.zrange(KEY, 0, -1) == []
+        held = await fake_redis.zrange(KEY, 0, -1, withscores=True)
+        assert held == [(f"{tid}:50000001", held[0][1])]
+        assert before + settings.UPLOAD_URL_LIFETIME_SECONDS - 2 <= held[0][1]
+        assert held[0][1] <= before + settings.UPLOAD_URL_LIFETIME_SECONDS + 2
 
     async def test_cancel_drops_a_member_that_appeared_after_the_snapshot(
         self, fake_redis, monkeypatch
@@ -278,7 +282,7 @@ class TestOnlyLandedBytesOutliveTheReservation:
         await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
 
         remaining = await fake_redis.zrange(KEY, 0, -1)
-        assert not any(str(member).startswith(f"{tid}:") for member in remaining)
+        assert remaining == [f"{tid}:4096"]
 
     async def test_a_hold_after_cancel_writes_nothing(self, fake_redis, monkeypatch):
         monkeypatch.setattr(r2_mod.R2Service, "delete_objects", AsyncMock())
@@ -288,10 +292,11 @@ class TestOnlyLandedBytesOutliveTheReservation:
         stale = TransferModel.model_validate(await redis_service.get_transfer(tid))
 
         await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
+        before = dict(await fake_redis.zrange(KEY, 0, -1, withscores=True))
         held = await svc._hold_landed_bytes(stale, 4096, int(time.time()) + 600)
 
         assert held is None
-        assert await fake_redis.zrange(KEY, 0, -1) == []
+        assert dict(await fake_redis.zrange(KEY, 0, -1, withscores=True)) == before
 
 
 class TestCompleteRechecksTheCap:

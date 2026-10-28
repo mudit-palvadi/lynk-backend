@@ -515,6 +515,16 @@ class TransferService:
                 name = str(member)
                 if name.startswith(prefix):
                     await client.zrem(ACTIVE_TRANSFERS_KEY, name)
+            # The presigned upload URL cannot be revoked. Count the declared
+            # size until that signature expires. This is the signed-URL hold,
+            # not the short unfilled-create reservation (#50).
+            await client.zadd(
+                ACTIVE_TRANSFERS_KEY,
+                {
+                    f"{transfer_id}:{transfer.total_size}": int(time.time())
+                    + settings.UPLOAD_URL_LIFETIME_SECONDS
+                },
+            )
         finally:
             await self.redis.release_record_lock(client, lock_key, token)
         await self._release_open_slot(client_ip, transfer_id)
