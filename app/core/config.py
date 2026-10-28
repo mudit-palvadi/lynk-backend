@@ -17,9 +17,10 @@ class Settings(BaseSettings):
     MAX_FILES_PER_TRANSFER: int = 10
     # Client tiers: Cloud/R2 free = 15 MB, rewarded-ad unlock = 30 MB.
     # P2P free = 20 MB, rewarded-ad unlock = 50 MB.
-    # The server enforces the absolute ceiling (cannot verify ad views).
+    # The server cannot verify ad views, so one file and the whole transfer
+    # both stop at 50 MB. Ten files are allowed only when they add up to that.
     MAX_INDIVIDUAL_FILE_SIZE: int = 52428800
-    MAX_TOTAL_TRANSFER_SIZE: int = 524288000
+    MAX_TOTAL_TRANSFER_SIZE: int = 52428800
     MAX_TOTAL_R2_CAP_BYTES: int = 10200547328
 
     TRANSFER_LIFETIME_SECONDS: int = 600
