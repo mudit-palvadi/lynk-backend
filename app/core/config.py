@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     # ASGI peer is an edge address; a request from one of these ranges is
     # allowed to carry the real client address in `CF-Connecting-IP`.
     # Source: https://www.cloudflare.com/ips/ (synced manually).
+    #
+    # When this secret is set, that header is trusted only together with a
+    # matching `X-Lynk-Edge-Secret`. Empty keeps the range check alone, so a
+    # deploy that has not taught the Worker to inject the secret does not put
+    # every user behind one edge into one rate-limit bucket.
+    CLOUDFLARE_EDGE_SECRET: str = ""
     CLOUDFLARE_IP_RANGES: list[str] = [
         # IPv4
         "173.245.48.0/20",

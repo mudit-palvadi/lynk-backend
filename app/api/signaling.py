@@ -43,7 +43,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.core.security import resolve_client_address
+from app.core.security import EDGE_SECRET_HEADER, resolve_client_address
 
 router = APIRouter(tags=["signaling"])
 
@@ -264,6 +264,7 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
     host = resolve_client_address(
         websocket.client.host if websocket.client else None,
         websocket.headers.get("CF-Connecting-IP"),
+        websocket.headers.get(EDGE_SECRET_HEADER),
     )
     if not _open_host_connection(host):
         await websocket.send_text(json.dumps({"type": "error", "msg": "too many connections"}))
