@@ -253,13 +253,25 @@ class RedisService:
             raise ServiceUnavailableException("Failed to update receiver session")
 
     async def delete_receiver_session(self, session_id: str) -> None:
+        """Remove a receiver session while holding the same lock as attach.
+
+        An attach that already read the session then sees a missing record
+        and stops, instead of writing the session back after this delete.
+        """
         client = await self.get_client()
         key = self._get_receiver_key(session_id)
+        token = None
         try:
+            token = await self.acquire_record_lock(client, f"{key}:lock")
             await client.delete(key)
+        except ServiceUnavailableException:
+            raise
         except Exception as e:
             logger.error(f"Redis delete_receiver_session failed: {e}")
             raise ServiceUnavailableException("Failed to delete receiver session")
+        finally:
+            if token is not None:
+                await self.release_record_lock(client, f"{key}:lock", token)
 
     def _get_sender_key(self, session_id: str) -> str:
         return f"lynk:sender:{session_id}"
