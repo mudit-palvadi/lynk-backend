@@ -1,4 +1,5 @@
 import os
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,6 +79,8 @@ class Settings(BaseSettings):
     # deploy that has not taught the Worker to inject the secret does not put
     # every user behind one edge into one rate-limit bucket.
     CLOUDFLARE_EDGE_SECRET: str = ""
+    # Additional network budget; individual IPv6 address limits still apply.
+    RATE_LIMIT_IPV6_PREFIX_LENGTH: int = Field(default=64, ge=1, le=128)
     CLOUDFLARE_IP_RANGES: list[str] = [
         # IPv4
         "173.245.48.0/20",
