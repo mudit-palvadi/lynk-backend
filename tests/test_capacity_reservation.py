@@ -272,3 +272,31 @@ class TestCompleteRechecksTheCap:
         assert stored["files"][0]["status"] != "uploaded"
         assert stored["status"] != "ready"
         deleted.assert_awaited()
+
+    async def test_an_expired_reservation_does_not_skip_the_cap(
+        self, fake_redis, monkeypatch
+    ):
+        _verify_as_declared(monkeypatch)
+        deleted = AsyncMock()
+        monkeypatch.setattr(r2_mod.R2Service, "delete_objects", deleted)
+        svc = TransferService(redis_service=redis_service, r2_service=R2Service())
+        created = await svc.create_transfer(_two_files())
+        tid = created["transfer_id"]
+        now = int(time.time())
+        await fake_redis.zadd(KEY, {f"{tid}:50000001": now - 5})
+        await fake_redis.zadd(
+            KEY, {f"other:{settings.MAX_TOTAL_R2_CAP_BYTES}": now + 600}
+        )
+        tiny = next(f for f in created["files"] if f["file_name"] == "tiny.txt")
+
+        with pytest.raises(LimitExceededException):
+            await svc.complete_file(
+                transfer_id=tid,
+                file_id=tiny["file_id"],
+                sender_secret=created["sender_secret"],
+            )
+
+        stored = await redis_service.get_transfer(tid)
+        tiny_stored = next(f for f in stored["files"] if f["file_name"] == "tiny.txt")
+        assert tiny_stored["status"] != "uploaded"
+        deleted.assert_awaited()
