@@ -65,9 +65,13 @@ class TransferService:
                 name = str(member)
                 if name.startswith(prefix):
                     own.append(name)
+                    # A score Redis is about to sweep (score <= now) is
+                    # already expired. Keeping it would skip the cap check.
+                    score_value = float(score)
                     if (
                         name == reservation
-                        and float(score)
+                        and now
+                        < score_value
                         <= now + settings.UNFILLED_RESERVATION_SECONDS + 2
                     ):
                         reservation_alive = True
