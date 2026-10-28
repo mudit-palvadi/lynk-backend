@@ -193,6 +193,18 @@ class SenderService:
             "expires_in": await self._ttl(session_id),
         }
 
+    async def cancel_sender_session(
+        self, session_id: str, sender_secret: str | None
+    ) -> None:
+        data = await self.redis.get_sender_session(session_id)
+        if not data:
+            secrets_match(sender_secret, None)
+            raise TransferNotFoundException("Sender session not found or expired")
+        session = SenderSessionModel.model_validate(data)
+        if not secrets_match(sender_secret, session.sender_secret):
+            raise UnauthorizedException()
+        await self.redis.delete_sender_session(session_id)
+
     async def collect_key(
         self, session_id: str, receiver_secret: str | None = None
     ) -> dict:
