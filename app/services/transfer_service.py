@@ -111,6 +111,39 @@ class TransferService:
         client = await self.redis.get_client()
         await client.zrem(f"lynk:open:{client_ip}", transfer_id)
 
+    async def _retain_open_slot(
+        self,
+        client_ip: str | None,
+        transfer_id: str,
+        until: int,
+    ) -> None:
+        """Keep a cancelled transfer in the unfinished set until `until`.
+
+        The presigned upload URL cannot be revoked, so the declared size stays
+        in the cap until the signature expires. The slot has to stay with it.
+        Releasing the slot here is what let one address stack a new reservation
+        on top of every cancelled hold.
+        """
+        if not client_ip:
+            return
+        client = await self.redis.get_client()
+        open_key = f"lynk:open:{client_ip}"
+        await client.zadd(open_key, {transfer_id: until})
+        needed = max(1, until - int(time.time()) + settings.UNFILLED_RESERVATION_SECONDS)
+        ttl = int(await client.ttl(open_key))
+        if ttl < needed:
+            await client.expire(open_key, needed)
+
+    async def _extend_open_ttl(self, client, open_key: str, seconds: int) -> None:
+        """Lengthen the set's TTL. Never shorten it.
+
+        A later create used to set the TTL back to the two-minute window, which
+        dropped a cancelled upload's slot while its cap hold was still live.
+        """
+        ttl = int(await client.ttl(open_key))
+        if ttl < seconds:
+            await client.expire(open_key, seconds)
+
     async def create_transfer(
         self, files_input: list[dict], *, client_ip: str | None = None
     ) -> dict:
@@ -166,6 +199,7 @@ class TransferService:
             total_size=total_size,
             sender_secret=sender_secret,
             access_token=access_token,
+            owner_address=client_ip or "",
             files=file_models,
         )
 
@@ -184,7 +218,8 @@ class TransferService:
                 if open_count >= settings.MAX_OPEN_RESERVATIONS_PER_CLIENT:
                     raise RateLimitExceededException(
                         "Too many unfinished transfers from this address. "
-                        "Finish or cancel one and try again."
+                        "Finish one and try again. A cancelled transfer keeps "
+                        "its slot until the upload link expires."
                     )
 
             await client.zremrangebyscore(ACTIVE_TRANSFERS_KEY, "-inf", current_time)
@@ -217,8 +252,8 @@ class TransferService:
             )
             if open_key:
                 await client.zadd(open_key, {transfer_id: reservation_until})
-                await client.expire(
-                    open_key, settings.UNFILLED_RESERVATION_SECONDS * 2
+                await self._extend_open_ttl(
+                    client, open_key, settings.UNFILLED_RESERVATION_SECONDS * 2
                 )
         finally:
             await self.redis.release_record_lock(client, lock_key, token)
@@ -330,7 +365,9 @@ class TransferService:
         # lapses, so completing one small file cannot free the slot for the
         # next create (#50).
         if transfer.status == "ready":
-            await self._release_open_slot(client_ip, transfer_id)
+            await self._release_open_slot(
+                transfer.owner_address or client_ip, transfer_id
+            )
 
         fresh_file = next(f for f in transfer.files if f.file_id == file_id)
         return {
@@ -516,18 +553,21 @@ class TransferService:
                 if name.startswith(prefix):
                     await client.zrem(ACTIVE_TRANSFERS_KEY, name)
             # The presigned upload URL cannot be revoked. Count the declared
-            # size until that signature expires. This is the signed-URL hold,
-            # not the short unfilled-create reservation (#50).
+            # size until that signature expires, and keep the address's
+            # unfinished slot for the same window. This is the signed-URL
+            # hold, not the short unfilled-create reservation (#50).
+            until = int(time.time()) + settings.UPLOAD_URL_LIFETIME_SECONDS
             await client.zadd(
                 ACTIVE_TRANSFERS_KEY,
-                {
-                    f"{transfer_id}:{transfer.total_size}": int(time.time())
-                    + settings.UPLOAD_URL_LIFETIME_SECONDS
-                },
+                {f"{transfer_id}:{transfer.total_size}": until},
+            )
+            # Same lock as create's slot check, so a create cannot read a
+            # free slot in the gap after this hold is recorded.
+            await self._retain_open_slot(
+                transfer.owner_address or client_ip, transfer_id, until
             )
         finally:
             await self.redis.release_record_lock(client, lock_key, token)
-        await self._release_open_slot(client_ip, transfer_id)
 
         file_ids = [f.file_id for f in transfer.files]
         await self.r2.delete_objects(transfer_id, file_ids)

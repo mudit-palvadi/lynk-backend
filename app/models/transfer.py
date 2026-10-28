@@ -20,4 +20,8 @@ class TransferModel(BaseModel):
     # the record cannot authorize metadata, download, cancel, extend, or complete.
     sender_secret: str = ""
     access_token: str = ""
+    # The address that owns this transfer's unfinished slot. Empty on records
+    # written before the slot was kept for a cancelled upload URL. The API
+    # responses build their own dicts, so this stays off the wire.
+    owner_address: str = ""
     files: list[FileItemModel] = Field(default_factory=list)
