@@ -342,3 +342,28 @@ def test_a_published_cloudflare_range_is_trusted() -> None:
     request = _FakeRequest(host=host, headers={"CF-Connecting-IP": CLIENT_IP})
 
     assert resolve_client_ip(request) == CLIENT_IP
+
+
+def test_a_forwarded_value_that_is_not_an_ip_is_ignored() -> None:
+    first = settings.CLOUDFLARE_IP_RANGES[0]
+    host = str(ipaddress.ip_network(first).network_address + 1)
+    request = _FakeRequest(host=host, headers={"CF-Connecting-IP": "not-an-ip"})
+
+    assert resolve_client_ip(request) == host
+
+
+def test_a_configured_edge_secret_is_required(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "CLOUDFLARE_EDGE_SECRET", "edge-secret")
+    first = settings.CLOUDFLARE_IP_RANGES[0]
+    host = str(ipaddress.ip_network(first).network_address + 1)
+    missing = _FakeRequest(host=host, headers={"CF-Connecting-IP": CLIENT_IP})
+    present = _FakeRequest(
+        host=host,
+        headers={
+            "CF-Connecting-IP": CLIENT_IP,
+            "X-Lynk-Edge-Secret": "edge-secret",
+        },
+    )
+
+    assert resolve_client_ip(missing) == host
+    assert resolve_client_ip(present) == CLIENT_IP

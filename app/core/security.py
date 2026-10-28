@@ -22,6 +22,7 @@ from app.services.redis_service import redis_service
 SENDER_SECRET_HEADER = "X-Lynk-Sender-Secret"
 ACCESS_TOKEN_HEADER = "X-Lynk-Access-Token"
 RECEIVER_SECRET_HEADER = "X-Lynk-Receiver-Secret"
+EDGE_SECRET_HEADER = "X-Lynk-Edge-Secret"
 
 
 # Hashed when a credential is missing, so the comparison is always 32 bytes
@@ -60,21 +61,36 @@ def _is_cloudflare_address(ip: str) -> bool:
     return False
 
 
-def resolve_client_address(peer: str | None, connecting_ip: str | None) -> str:
+def _is_ip_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def resolve_client_address(
+    peer: str | None,
+    connecting_ip: str | None,
+    edge_secret: str | None = None,
+) -> str:
     """Return the address to attribute a connection to.
 
     The API is served through Cloudflare, so the ASGI peer is a Cloudflare
     edge address and every user would otherwise share a single bucket. The
     `CF-Connecting-IP` header carries the original client address, and
     Cloudflare overwrites it on every request, so it is only trusted when the
-    connection actually arrived from a Cloudflare address. A connection that
-    reaches the origin directly (an exposed port) has no such guarantee, so it
-    is attributed to the peer instead.
+    connection actually arrived from a Cloudflare address and the value is an
+    IP. When `CLOUDFLARE_EDGE_SECRET` is set, the request must also present
+    that secret. A connection that reaches the origin directly (an exposed
+    port) has no such guarantee, so it is attributed to the peer instead.
     """
     if peer and _is_cloudflare_address(peer):
         forwarded = (connecting_ip or "").strip()
-        if forwarded:
-            return forwarded
+        if _is_ip_address(forwarded):
+            configured = settings.CLOUDFLARE_EDGE_SECRET
+            if not configured or secrets_match(edge_secret, configured):
+                return forwarded
 
     return peer or "unknown"
 
@@ -82,7 +98,11 @@ def resolve_client_address(peer: str | None, connecting_ip: str | None) -> str:
 def resolve_client_ip(request: Request) -> str:
     """Return the address to rate-limit against (see resolve_client_address)."""
     peer = request.client.host if request.client else ""
-    return resolve_client_address(peer, request.headers.get("CF-Connecting-IP"))
+    return resolve_client_address(
+        peer,
+        request.headers.get("CF-Connecting-IP"),
+        request.headers.get(EDGE_SECRET_HEADER),
+    )
 
 
 class RateLimiter:
