@@ -19,6 +19,7 @@ import pytest
 import app.services.r2_service as r2_mod
 from app.core.config import settings
 from app.core.exceptions import LimitExceededException
+from app.models.transfer import TransferModel
 from app.services.r2_service import R2Service
 from app.services.redis_service import redis_service
 from app.services.transfer_service import TransferService
@@ -241,6 +242,33 @@ class TestOnlyLandedBytesOutliveTheReservation:
 
         await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
 
+        assert await fake_redis.zrange(KEY, 0, -1) == []
+
+    async def test_cancel_drops_a_member_that_appeared_after_the_snapshot(
+        self, fake_redis, monkeypatch
+    ):
+        monkeypatch.setattr(r2_mod.R2Service, "delete_objects", AsyncMock())
+        svc = TransferService(redis_service=redis_service, r2_service=R2Service())
+        created = await svc.create_transfer(_payload())
+        tid = created["transfer_id"]
+        await fake_redis.zadd(KEY, {f"{tid}:12345": int(time.time()) + 600})
+
+        await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
+
+        remaining = await fake_redis.zrange(KEY, 0, -1)
+        assert not any(str(member).startswith(f"{tid}:") for member in remaining)
+
+    async def test_a_hold_after_cancel_writes_nothing(self, fake_redis, monkeypatch):
+        monkeypatch.setattr(r2_mod.R2Service, "delete_objects", AsyncMock())
+        svc = TransferService(redis_service=redis_service, r2_service=R2Service())
+        created = await svc.create_transfer(_payload())
+        tid = created["transfer_id"]
+        stale = TransferModel.model_validate(await redis_service.get_transfer(tid))
+
+        await svc.cancel_transfer(tid, sender_secret=created["sender_secret"])
+        held = await svc._hold_landed_bytes(stale, 4096, int(time.time()) + 600)
+
+        assert held is None
         assert await fake_redis.zrange(KEY, 0, -1) == []
 
 
