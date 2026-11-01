@@ -76,15 +76,15 @@ The service coordinates the transfer of files by generating short-lived, presign
    up in a shipped layer.
 
 ### Local Environment Config
-Create a `.env` file in the root of the `backend` folder:
+Create a `.env` file in the root of the `backend` folder (copy `.env.example`):
 ```env
 ENVIRONMENT=development
 PORT=8000
 HOST=0.0.0.0
 REDIS_URL=redis://localhost:6379/0
 
-# Optional: Add your actual R2 settings here for real uploads.
-# Leaving them blank defaults to local mock configurations.
+# Required for real uploads: your own Cloudflare R2 bucket and API token.
+# The built-in mock-* defaults cannot store files.
 R2_ACCOUNT_ID=your-cloudflare-account-id
 R2_ACCESS_KEY_ID=your-access-key-id
 R2_SECRET_ACCESS_KEY=your-secret-access-key
