@@ -15,7 +15,7 @@ from app.api.signaling import (
 )
 from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.exceptions import register_exception_handlers
-from app.core.config import settings
+from app.core.config import api_docs_urls, settings
 from app.core.security import secrets_match
 from app.services.redis_service import redis_service
 
@@ -94,6 +94,8 @@ app = FastAPI(
     description="Cross-device file transfer backend",
     version="1.0.0",
     lifespan=lifespan,
+    # Production hides /docs, /redoc and /openapi.json (#65).
+    **api_docs_urls(settings.ENVIRONMENT),
 )
 
 # Added before CORS so CORS wraps it and a browser can read the 413.

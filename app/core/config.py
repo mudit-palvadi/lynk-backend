@@ -1,6 +1,47 @@
 import os
-from pydantic import Field
+from urllib.parse import urlsplit
+
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PRODUCTION = "production"
+
+# R2 settings whose built-in default is a `mock-*` placeholder. A production
+# process must not fall back to them: the API would start and then fail every
+# upload instead of refusing to boot.
+R2_CREDENTIAL_FIELDS = (
+    "R2_ACCOUNT_ID",
+    "R2_ACCESS_KEY_ID",
+    "R2_SECRET_ACCESS_KEY",
+)
+
+# Origins a browser uses while developing on the same machine. Production
+# never keeps them (see Settings._reject_unsafe_production_defaults).
+_LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def is_production(environment: str) -> bool:
+    """Whether ``environment`` names production, case-insensitively."""
+    return environment.strip().lower() == PRODUCTION
+
+
+def api_docs_urls(environment: str) -> dict[str, str | None]:
+    """FastAPI docs and schema URLs for ``environment``.
+
+    Production serves neither the interactive docs nor the OpenAPI schema:
+    both describe every endpoint and payload shape. Development and test keep
+    FastAPI's defaults so the schema stays browsable while working (#65).
+    """
+    if is_production(environment):
+        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+
+
+def _is_local_origin(origin: str) -> bool:
+    """Whether ``origin`` points at the local machine."""
+    hostname = urlsplit(origin).hostname
+    return hostname is not None and hostname.lower() in _LOCAL_HOSTNAMES
 
 
 class Settings(BaseSettings):
@@ -112,7 +153,42 @@ class Settings(BaseSettings):
         env_file=os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        # A validation error must not echo constructor input: this model holds
+        # R2 secrets, and a production failure would otherwise print them.
+        hide_input_in_errors=True,
     )
+
+    @model_validator(mode="after")
+    def _reject_unsafe_production_defaults(self) -> "Settings":
+        """Refuse production configurations that still carry development values.
+
+        Only names are reported, never the credential values themselves.
+        """
+        if not is_production(self.ENVIRONMENT):
+            return self
+
+        # A production process must not boot on placeholder R2 credentials:
+        # it would start successfully and then fail every upload.
+        unset = [
+            name
+            for name in R2_CREDENTIAL_FIELDS
+            if not getattr(self, name).strip() or getattr(self, name).strip().startswith("mock-")
+        ]
+        if unset:
+            raise ValueError(
+                "Production requires real Cloudflare R2 credentials; "
+                f"missing or placeholder: {', '.join(unset)}"
+            )
+
+        # Production never keeps a localhost/loopback CORS origin. They are
+        # dropped rather than rejected: an operator who copied the development
+        # allowlist would otherwise take the API down, and silently dropping
+        # still guarantees no page served from a local address is granted
+        # access. Set ALLOWED_ORIGINS explicitly to serve other domains.
+        self.ALLOWED_ORIGINS = [
+            origin for origin in self.ALLOWED_ORIGINS if not _is_local_origin(origin)
+        ]
+        return self
 
 
 settings = Settings()
