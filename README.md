@@ -118,7 +118,7 @@ python -m pytest
 python -m ruff check .
 ```
 
-The suite uses a Redis double, so no running Redis is needed for tests.
+The test suite does not need a running Redis instance.
 
 ## Security
 
