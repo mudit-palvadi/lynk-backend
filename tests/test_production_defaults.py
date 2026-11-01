@@ -18,12 +18,19 @@ REAL_R2 = {
 
 
 def _production(**overrides) -> Settings:
-    return Settings(ENVIRONMENT="production", **REAL_R2, **overrides)
+    # The local checkout may have a .env with real credentials; these tests
+    # deliberately construct their own values.
+    return Settings(
+        ENVIRONMENT="production",
+        _env_file=None,
+        **REAL_R2,
+        **overrides,
+    )
 
 
 def test_production_rejects_mock_r2_credentials():
     with pytest.raises(ValidationError) as excinfo:
-        Settings(ENVIRONMENT="production")
+        Settings(ENVIRONMENT="production", _env_file=None)
 
     message = str(excinfo.value)
     for field in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
@@ -40,7 +47,7 @@ def test_production_rejects_any_single_mock_r2_credential(field):
     values = {"ENVIRONMENT": "production", **REAL_R2, field: f"mock-{field.lower()}"}
 
     with pytest.raises(ValidationError) as excinfo:
-        Settings(**values)
+        Settings(_env_file=None, **values)
 
     assert field in str(excinfo.value)
     assert values[field] not in str(excinfo.value)
@@ -49,7 +56,7 @@ def test_production_rejects_any_single_mock_r2_credential(field):
 @pytest.mark.parametrize("environment", ["production", "Production", " PRODUCTION "])
 def test_production_is_matched_case_insensitively(environment):
     with pytest.raises(ValidationError):
-        Settings(ENVIRONMENT=environment)
+        Settings(ENVIRONMENT=environment, _env_file=None)
 
 
 def test_production_with_real_r2_credentials_constructs():
