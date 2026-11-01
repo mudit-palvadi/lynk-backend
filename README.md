@@ -91,6 +91,11 @@ R2_SECRET_ACCESS_KEY=your-secret-access-key
 R2_BUCKET_NAME=your-bucket-name
 ```
 
+`ENVIRONMENT=production` (matched case-insensitively) hides `/docs`, `/redoc`
+and `/openapi.json`, refuses to start while an R2 credential still has its
+`mock-*` default, and drops `localhost`/`127.0.0.1` entries from
+`ALLOWED_ORIGINS`. Development keeps all three.
+
 ---
 
 ## Running & Testing
@@ -99,7 +104,8 @@ R2_BUCKET_NAME=your-bucket-name
   ```bash
   uvicorn app.main:app --reload
   ```
-  Explore the interactive API docs at **`http://localhost:8000/docs`**.
+  Explore the interactive API docs at **`http://localhost:8000/docs`**
+  (development only; production serves no docs).
 
 * **Run the test suite**:
   ```bash
