@@ -1,219 +1,155 @@
-# Lynk — Cross-Device File Transfer API (Backend)
+<div align="center">
 
-<p align="center">
-  <img src="https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/Python_3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
-  <img src="https://img.shields.io/badge/Redis-DC382D?style=for-the-badge&logo=redis&logoColor=white" alt="Redis" />
-  <img src="https://img.shields.io/badge/Cloudflare_R2-F38020?style=for-the-badge&logo=cloudflare&logoColor=white" alt="R2" />
-</p>
+# LynkShare Backend
 
-This is the FastAPI backend service for **Lynk**, a minimal, login-free, cross-device file transfer app.
+**Self-hostable API and real-time service for LynkShare**
 
-The service coordinates the transfer of files by generating short-lived, presigned upload/download URLs directly to Cloudflare R2 and storing transfer session metadata in Redis. No file bytes are proxied through this server, ensuring high throughput and minimal memory overhead.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat-square&logo=redis&logoColor=white)](https://redis.io)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com)
+[![Cloudflare R2](https://img.shields.io/badge/Cloudflare_R2-F38020?style=flat-square&logo=cloudflare&logoColor=white)](https://www.cloudflare.com/developer-platform/r2/)
 
----
-
-## Architecture & Core Features
-
-* **Lifespan Pool Management**: Uses FastAPI's modern `@asynccontextmanager` lifespan handlers to manage connection pools for Redis cleanly.
-* **Non-Blocking I/O**: Offloads synchronous S3 `boto3` calls (used for R2 bucket interactions) to background worker threads using `anyio.to_thread.run_sync`.
-* **Zero-Knowledge Pathing**: Generates random UUID/cryptographic identifiers for files and transfers. Files are saved in private R2 folders without exposing original names.
-* **RFC 5987 Header Sanitation**: Filenames are URL-encoded before generation of download URLs, ensuring emojis and non-ASCII character sets work seamlessly without header injection vulnerabilities.
-* **IP-Based Rate Limiting**: Enforces request limits (5 requests per 60s) using a custom Redis-based FastAPI dependency to protect write endpoints from bot abuse.
-* **R2 Storage Cap Guard**: Employs a self-cleaning Redis Sorted Set (ZSET) to track total active file storage size in real-time, blocking new uploads if the active data would exceed the 9.5 GB free-tier limit.
-* **TTL Preservation Rules**: Redis updates are executed dynamically, retrieving and preserving the remaining seconds of a session's lifetime to prevent lifetime extensions.
+</div>
 
 ---
 
-## API Endpoints
+LynkShare Backend coordinates encrypted file transfers between the Android app
+and the web app. It creates short-lived transfer and receiver sessions, helps
+two devices connect directly when possible, and provides temporary access to
+encrypted cloud storage when a direct path is not available. The service never
+receives plaintext file contents or the file-decryption key.
 
-### File Transfers (`/api/v1/transfers`)
-* **`POST /transfers`**: Initiates a transfer session, checks file limits, validates every `file_name`, and returns presigned upload URLs. A name that is empty, carries surrounding whitespace, contains a path separator, contains `..`, contains a control character, or is over 255 UTF-8 bytes is rejected with **400** and a string `detail`; no transfer is created.
-* **`POST /transfers/{transfer_id}/files/{file_id}/complete`**: Confirms that a file has been successfully uploaded to Cloudflare R2 and updates status.
-* **`GET /transfers/{transfer_id}`**: Retrieves transfer metadata (file list, sizes, status, and time-to-live).
-* **`POST /transfers/{transfer_id}/downloads`**: Generates presigned download URLs for the files.
-* **`DELETE /transfers/{transfer_id}`**: Cancels the transfer and removes files from storage immediately.
-* **`POST /transfers/{transfer_id}/extend`**: Extends the session TTL to 30 minutes. It does not check that an ad was watched.
-* **`GET /transfers/{transfer_id}/turn-credentials`**: Short-lived HMAC TURN credentials. Returns `enabled: false` when TURN is not configured, and **404** for an unknown transfer id.
+This repository is part of [LynkShare](https://github.com/mudit-palvadi/LynkShare).
+The mobile app lives in
+[lynkshare-mobile](https://github.com/mudit-palvadi/lynkshare-mobile), and the
+browser app lives in
+[lynkshare-web](https://github.com/mudit-palvadi/lynkshare-web).
 
-### Signaling
-* **`WS /ws/signaling/{session_id}`**: In-memory two-peer relay for SDP and ICE. Requires a single Uvicorn worker. `main.py` registers a session validator that accepts a live transfer id **or** a live receiver-session id and refuses everything else (configurable with `SIGNALING_VALIDATE_SESSION`, default on). Idle rooms are evicted by the sweeper started in the same lifespan.
+## What it does
 
-### Receiver Sessions (`/api/v1/receiver-sessions`)
-* **`POST /receiver-sessions`**: Creates a temporary receiver session (status `"waiting"`) and returns a session ID.
-* **`GET /receiver-sessions/{session_id}`**: Polls for session changes (tracks if a transfer has been attached).
-* **`POST /receiver-sessions/{session_id}/attach-transfer`**: Attaches a transfer ID to a receiver session (triggers status change to `"attached"`).
-* **`DELETE /receiver-sessions/{session_id}`**: Cancels and removes a receiver session.
+- Creates short-lived transfer and receiver sessions.
+- Coordinates direct connections between two devices.
+- Provides temporary access to encrypted objects in Cloudflare R2.
+- Optionally issues short-lived TURN credentials for restrictive networks.
+- Keeps session metadata in Redis.
 
----
+## Quick start
 
-## Development Setup
+### Docker Compose (recommended)
 
-### Prerequisites
-* Python 3.10+
-* Redis Server (running locally on port `6379`)
+You need Docker with Compose and a Cloudflare R2 bucket for cloud transfers.
 
-### Installation
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv .venv
-   # Windows Command Prompt:
-   .venv\Scripts\activate
-   # Windows PowerShell:
-   .venv\Scripts\Activate.ps1
-   ```
-3. Install all dependencies:
-   ```bash
-   pip install -r requirements.txt -r requirements-dev.txt
-   ```
-   `requirements.txt` holds the runtime dependencies only; `requirements-dev.txt`
-   holds the test and lint tooling (`pytest`, `ruff`). The production image
-   installs `requirements.txt` alone, so neither `pytest` nor the linter ends
-   up in a shipped layer.
-
-### Local Environment Config
-Create a `.env` file in the root of the `backend` folder (copy `.env.example`):
-```env
-ENVIRONMENT=development
-PORT=8000
-HOST=0.0.0.0
-
-# Required by docker compose: it is interpolated into the Redis command and
-# into the web service's REDIS_URL. Use the same value here and in REDIS_URL
-# (URL-encode reserved characters such as @, :, / and #).
-REDIS_PASSWORD=replace-with-a-long-random-password
-REDIS_URL=redis://:replace-with-a-long-random-password@localhost:6379/0
-
-# Required for real uploads: your own Cloudflare R2 bucket and API token.
-# The built-in mock-* defaults cannot store files.
-R2_ACCOUNT_ID=your-cloudflare-account-id
-R2_ACCESS_KEY_ID=your-access-key-id
-R2_SECRET_ACCESS_KEY=your-secret-access-key
-R2_BUCKET_NAME=your-bucket-name
+```sh
+git clone https://github.com/mudit-palvadi/lynkshare-backend.git
+cd lynkshare-backend
+cp .env.example .env
 ```
 
-Set `REDIS_PASSWORD` in your shell and in `.env` to a long random value, then
-start Redis with the same password and with persistence turned off, so it
-behaves like the Compose service:
+Open `.env` and set:
 
-```bash
+- `REDIS_PASSWORD` to a long random value.
+- `REDIS_URL` to use the same password.
+- `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+  `R2_BUCKET_NAME` to your own bucket.
+- `ALLOWED_ORIGINS` to include the address where you serve the web app.
+
+Then start the stack:
+
+```sh
+docker compose up -d
+```
+
+The API listens on `http://localhost:8000`. The Compose stack requires
+`REDIS_PASSWORD` and refuses to start without it. If you serve the web app
+locally on port `3000`, the default `ALLOWED_ORIGINS` already includes it.
+
+### Manual setup
+
+You need Python 3.10+, Redis 7+, and an R2 bucket for cloud transfers.
+
+```sh
+python -m venv .venv
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# macOS/Linux:       source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Set `REDIS_PASSWORD` in your shell, then start Redis with the same password and
+without persistence:
+
+```sh
 redis-server --requirepass "$REDIS_PASSWORD" --save "" --appendonly no
 ```
 
-`docker compose` reads the same `.env` for interpolation; it refuses to start
-when `REDIS_PASSWORD` is missing or empty.
+Create `.env` from `.env.example`, set the same password in `REDIS_PASSWORD`
+and `REDIS_URL`, add your R2 credentials, then start the API:
 
-`ENVIRONMENT=production` (matched case-insensitively) hides `/docs`, `/redoc`
-and `/openapi.json`, refuses to start while an R2 credential still has its
-`mock-*` default, and drops `localhost`/`127.0.0.1` entries from
-`ALLOWED_ORIGINS`. Development keeps all three.
+```sh
+uvicorn app.main:app --reload
+```
+
+## Configuration
+
+Copy `.env.example` to `.env` and fill in your own values. Do not commit
+`.env`.
+
+| Variable | What it does |
+|---|---|
+| `REDIS_PASSWORD` | Required. Password for Redis. Use the same value in `REDIS_URL`. |
+| `REDIS_URL` | Redis connection string. |
+| `R2_ACCOUNT_ID` | Cloudflare account ID. |
+| `R2_ACCESS_KEY_ID` | R2 API token access key. |
+| `R2_SECRET_ACCESS_KEY` | R2 API token secret. |
+| `R2_BUCKET_NAME` | Bucket for encrypted cloud transfers. |
+| `MAX_FILES_PER_TRANSFER` | Maximum number of files in one transfer. |
+| `MAX_TOTAL_TRANSFER_SIZE` | Maximum combined size of one transfer. |
+| `MAX_INDIVIDUAL_FILE_SIZE` | Maximum size of one file. |
+| `TURN_URLS` | Optional TURN server URLs for restrictive networks. |
+| `TURN_SECRET` | Optional TURN shared secret. |
+| `ALLOWED_ORIGINS` | Browser origins allowed to call the API. |
+
+Cloud transfers need Cloudflare R2. Direct transfers do not upload file bytes.
+
+## Testing
+
+```sh
+python -m pytest
+python -m ruff check .
+```
+
+The test suite does not need a running Redis instance.
+
+## Security
+
+- Session data is short-lived and stored in Redis.
+- Files are encrypted before they reach the service; the service does not
+  receive the file-decryption key.
+- R2 credentials stay on the server and are never bundled into the mobile or
+  web app.
+- Redis requires a password and keeps data in memory only.
+- The container runs as a non-root user with all Linux capabilities dropped.
+- TURN credentials are short-lived when TURN is configured.
+- Do not commit `.env` or expose Redis to the public internet.
+
+For private vulnerability reporting, use the
+[LynkShare security policy](https://github.com/mudit-palvadi/lynkshare-mobile/blob/main/SECURITY.md).
+
+## Contributing
+
+Issues and pull requests are welcome in the
+[lynkshare-backend repository](https://github.com/mudit-palvadi/lynkshare-backend).
+Run the tests and linter before opening a pull request.
+
+## License
+
+No license is currently declared for this repository. Check with the maintainer
+before redistributing or reusing the code.
 
 ---
 
-## Running & Testing
+<div align="center">
 
-* **Start the Server (Reload Mode)**:
-  ```bash
-  uvicorn app.main:app --reload
-  ```
-  Explore the interactive API docs at **`http://localhost:8000/docs`**
-  (development only; production serves no docs).
+Part of **[LynkShare](https://github.com/mudit-palvadi/LynkShare)**
 
-* **Run the test suite**:
-  ```bash
-  .venv\Scripts\python -m pytest
-  ```
-  Tests live in `backend/tests` (transfers, receiver sessions, signaling, TURN, limits, file-name validation, image hardening, CI contract). Do not treat an old "17 tests" or "47 tests" note as the current count.
-
-* **Run the linter**:
-  ```bash
-  .venv\Scripts\python -m ruff check .
-  ```
-  The line-length limit is 100 (`ruff.toml`). CI runs this, so a long line is a failing check, not a suggestion.
-
-### Continuous Integration
-
-`.github/workflows/ci.yml` runs on every push to `main`, on every pull request,
-and on demand. It installs `requirements.txt` plus `requirements-dev.txt`, then
-runs `ruff check .` and `pytest -q` with Python pinned to `3.13`. **No Redis
-service is needed** - `tests/conftest.py` installs a double by default, so the
-suite is hermetic. A newer commit cancels an in-flight run, and no step may
-use `continue-on-error`.
-
-The workflow file is itself covered by `tests/test_ci_pipeline.py`.
-
----
-
-## Container Image
-
-The `Dockerfile` is a two-stage build and the image is deliberately narrow:
-
-* **The runtime image runs as a non-root user** (`lynk`, uid/gid 1001). Nothing
-  in the container needs root.
-* **Only `app/` is copied in.** There is no `COPY . .`, so a `.env`, the
-  tests, the deploy scripts, the git history and the local virtualenv cannot
-  end up in a layer.
-* **`.dockerignore` is the second half of that.** It excludes `.env` (keeping
-  `.env.example`), `.git`, `__pycache__/`, `.venv/`, the test and cache
-  directories, `tests/`, `deploy/`, and the compose files.
-* **The dependencies live in `/opt/venv`**, built in the first stage and
-  copied into the runtime stage, so the build toolchain is not in the shipped
-  image.
-* **Secrets come from the environment, not from a baked file.** `docker-compose.yml`
-  passes `env_file: .env` at run time; `config.py` reads the environment
-  first, and its `.env` path does not exist inside the container.
-* **Both services drop every Linux capability** (`cap_drop: [ALL]`) and set
-  `no-new-privileges:true`, so neither can gain privileges at run time.
-* **Redis is password protected and does not persist.** Compose interpolates a
-  mandatory `REDIS_PASSWORD` into `--requirepass` and into the web service's
-  `REDIS_URL`; `--save "" --appendonly no` keeps session records, metadata and
-  wrapped keys in memory only, so there is no `redis_data` volume to leak.
-* **Every image is pinned by digest.** The `redis` service and both
-  `python:3.13-slim` stages use a `@sha256:` manifest-list digest, so a
-  repointed tag cannot change what runs.
-
-`tests/test_docker_hardening.py` and `tests/test_compose_hardening.py` assert
-all of the above, so a change that reintroduces a root user, a `COPY . .`, a
-baked `.env`, an unpinned image, a capability, or `pytest` in the runtime
-requirements fails the suite.
-
----
-
-## Production & Cloud Deployment Notes
-
-When deploying to environments like **Oracle Cloud (OCI)**:
-1. **Network Configuration**: The API is the only thing Cloudflare talks to, so the OCI Ingress Security Rules must allow the Cloudflare IP ranges (and nothing else) to reach the published container port. Do **not** open the API port to `0.0.0.0/0`. See [DOCKER-USER hardening](#docker-user-hardening-oci) for the host-level second layer.
-2. **Process Management**: Run the app as a background service using **systemd** (`systemctl`) or containerize it via **Docker** to ensure persistent operation and crash recovery.
-3. **TLS**: Cloudflare terminates TLS (orange-cloud proxy) and connects straight to the origin's published port over plain HTTP — there is no reverse proxy on the VM. Use Caddy or nginx with Let's Encrypt only if the Cloudflare proxy is not in front of the origin.
-4. **Environment file**: the VM's `.env` must set `ENVIRONMENT=production`, a long random `REDIS_PASSWORD`, and the R2/TURN secrets. `docker compose` refuses to start without `REDIS_PASSWORD`; it is used both to start Redis with `--requirepass` and to build the web service's `REDIS_URL`. Rotating it means updating the file and recreating both services, and Redis starts empty because persistence is disabled.
-
-### DOCKER-USER hardening (OCI)
-
-`docker-compose.yml` publishes the API as `8000:8000`, so the container's port is reachable on **every** host interface. Docker's `nat` table DNATs that port to the container, which means the traffic is *forwarded* and can be filtered with the `DOCKER-USER` chain — the hook Docker itself provides for exactly this.
-
-`deploy/docker_user_chain.sh` installs a chain that allows only the Cloudflare edge ranges to reach `:8000` and drops everything else, without touching the host's own listeners (SSH, and the TURN server on `3478` tcp/udp, live in the `INPUT` chain):
-
-```
-Cloudflare edge CIDRs        -> RETURN   (the only allowed clients)
--i br-<compose bridge>       -> RETURN   (container egress, container<->container, hairpin)
--p tcp --dport 8000          -> DROP     (everything else to the API port)
--j RETURN                              (all other forwarded traffic untouched)
-```
-
-Install it on the backend VM (it needs root):
-
-```bash
-sudo bash deploy/install_docker_user_chain.sh
-```
-
-That copies the installer to `/usr/local/sbin/lynk-docker-user.sh`, enables `lynk-docker-user.service` (runs after `docker.service`, so it also survives reboots) and `lynk-docker-user.timer` (re-applies the chain hourly), then verifies that `https://api.lynkshare.app/` still answers `200` — rolling back automatically if it does not.
-
-Notes:
-- The chain is idempotent: it compares the rendered rules and does nothing when they already match, so the hourly timer never leaves the chain empty.
-- The timer deliberately does **not** run the verification/auto-rollback. A brief Cloudflare outage must never flush the chain and re-open the API port to the internet; rolling back is a human decision.
-- `netfilter-persistent` must not be used to restore these rules: it runs *before* `docker.service` and would blank the chain on boot.
-- Rollback: `iptables -F DOCKER-USER && ip6tables -F DOCKER-USER` plus `systemctl disable --now lynk-docker-user.service lynk-docker-user.timer`.
+</div>
