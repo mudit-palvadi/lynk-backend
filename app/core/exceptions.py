@@ -1,3 +1,5 @@
+import redis.exceptions
+from botocore.exceptions import BotoCoreError
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -51,8 +53,29 @@ class ServiceUnavailableException(LynkException):
 def register_exception_handlers(app: FastAPI):
     """Registers global handlers to convert LynkExceptions into JSONResponses."""
 
+    def unavailable_response() -> JSONResponse:
+        """One 503 body for a storage outage, whichever client noticed it."""
+        error = ServiceUnavailableException()
+        return JSONResponse(
+            status_code=error.status_code,
+            content={"detail": error.message},
+            headers=error.headers,
+        )
+
     @app.exception_handler(LynkException)
     async def lynk_exception_handler(request: Request, exc: LynkException):
         return JSONResponse(
             status_code=exc.status_code, content={"detail": exc.message}, headers=exc.headers
         )
+
+    # Redis commands that escape a service's own try/except (raw zadd, ttl,
+    # zrange, zrem calls) and boto connection failures (EndpointConnectionError)
+    # must not surface as an unhandled 500. Only the storage clients are mapped
+    # here, so programming errors still fail loudly.
+    @app.exception_handler(redis.exceptions.RedisError)
+    async def redis_error_handler(request: Request, exc: redis.exceptions.RedisError):
+        return unavailable_response()
+
+    @app.exception_handler(BotoCoreError)
+    async def botocore_error_handler(request: Request, exc: BotoCoreError):
+        return unavailable_response()
