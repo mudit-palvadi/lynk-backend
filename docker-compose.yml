@@ -1,13 +1,29 @@
 services:
   redis:
-    image: redis:7-alpine
+    # Pinned by manifest-list digest so a moved tag cannot change the image
+    # that runs (#66). Refresh the digest deliberately when upgrading.
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     restart: always
+    # A password is mandatory: compose refuses to start when it is unset,
+    # instead of silently exposing an unauthenticated Redis on the bridge.
+    #
+    # Persistence is off on purpose (#66). The RDB snapshot would keep session
+    # records, file metadata and wrapped keys on disk after they expire, so
+    # the dataset lives in memory only (all records already carry a TTL).
+    #
     # Bounded so a flood of writes is refused by Redis instead of taking the
     # VM's memory (#51). noeviction: dropping a live transfer or key silently
     # would be worse than a failed write.
-    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction
-    volumes:
-      - redis_data:/data
+    # The password reaches Redis through the container environment, not as a
+    # literal argument in this file. `$$` keeps Compose from interpolating it;
+    # the shell reads it at container start.
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?}"
+    command: sh -c 'exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 256mb --maxmemory-policy noeviction --save "" --appendonly no'
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   web:
     build: .
@@ -20,14 +36,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - WEB_CONCURRENCY=1
       # Pinned here so the deploy cannot come up without the room token check.
       - SIGNALING_REQUIRE_ACCESS=true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - .env
     depends_on:
       - redis
-
-volumes:
-  redis_data:
