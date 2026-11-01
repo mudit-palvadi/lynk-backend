@@ -291,16 +291,29 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
             await websocket.close()
             return
 
+        # The effective role starts as the query value and follows a valid
+        # hello frame later. History and replay must use it, never the raw
+        # query: most clients only declare their role in the hello frame.
+        effective_role = role
+
         # Clean up stale history from a previous peer with the same role, so
         # reconnecting senders don't leave ghost offers for future receivers.
-        if role is not None:
-            room["history"] = [h for h in room["history"] if h[0] != role]
+        if effective_role is not None:
+            room["history"] = [h for h in room["history"] if h[0] != effective_role]
         # Replay buffered history authored by the *opposite* role only, so a
         # reconnecting peer never receives its own offer back (ISSUE-05).
         for entry_role, raw in list(room["history"]):
-            if _should_replay(entry_role, role):
+            if _should_replay(entry_role, effective_role):
                 await websocket.send_text(raw)
-        room["members"].append({"ws": websocket, "role": role})
+        # The cap above was checked before the replay, and every replay send is
+        # an await that lets another socket join. Recheck here, with no await
+        # between it and the append, so two racing joiners can never both seat
+        # themselves in a two-member room.
+        if len(room["members"]) >= _MAX_MEMBERS:
+            await websocket.send_text(json.dumps({"type": "error", "msg": "room full"}))
+            await websocket.close()
+            return
+        room["members"].append({"ws": websocket, "role": effective_role})
         member_room = room
         _touch(room)
 
@@ -333,15 +346,25 @@ async def signaling_ws(websocket: WebSocket, session_id: str, role: str | None =
                     continue
 
                 # In-band role declaration (ISSUE-05): stored, never relayed.
+                # The declared role becomes the socket's effective role, so its
+                # frames are tagged for the replay filter from now on.
                 if decoded.get("type") == "hello":
                     declared = decoded.get("role")
-                    for m in room["members"]:
-                        if m["ws"] is websocket and declared in ("sender", "receiver"):
-                            m["role"] = declared
-                            break
+                    if declared in ("sender", "receiver"):
+                        effective_role = declared
+                        for m in room["members"]:
+                            if m["ws"] is websocket:
+                                m["role"] = declared
+                                break
+                        # The join-time cleanup only knew the query role, usually
+                        # None. A hello role must drop its own stale frames too,
+                        # or a reconnect replays the peer's own offer back.
+                        room["history"] = [
+                            h for h in room["history"] if h[0] != declared
+                        ]
                     continue
 
-                room["history"].append((role, raw))
+                room["history"].append((effective_role, raw))
                 _trim_history(room)
 
                 dead: list[Any] = []
