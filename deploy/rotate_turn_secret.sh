@@ -55,24 +55,80 @@ for _ in $(seq 1 30); do
 done
 
 echo "==> Creating a transfer to exercise the endpoint"
-TRANSFER_ID=$(curl -s -X POST "$API/api/v1/transfers" \
+CREATE_RESPONSE=$(curl -s -X POST "$API/api/v1/transfers" \
   -H 'Content-Type: application/json' \
-  -d '{"files":[{"file_name":"rotation-check.txt","file_size":3,"content_type":"text/plain"}]}' \
-  | sed -n 's/.*"transfer_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  -d '{"files":[{"file_name":"rotation-check.txt","file_size":3,"content_type":"text/plain"}]}')
 
-if [ -z "$TRANSFER_ID" ]; then
-  echo "!! Could not create a transfer - cannot verify."
-  echo "!! The secret IS rotated; check the API logs and coturn config by hand."
+# #67: the create response is the only place the access token and sender secret
+# appear. Keep them in variables - never echo them - and use them for the
+# credential check (access token, #47) and the cleanup (sender secret).
+TRANSFER_ID=$(printf '%s' "$CREATE_RESPONSE" \
+  | sed -n 's/.*"transfer_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+ACCESS_TOKEN=$(printf '%s' "$CREATE_RESPONSE" \
+  | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+SENDER_SECRET=$(printf '%s' "$CREATE_RESPONSE" \
+  | sed -n 's/.*"sender_secret"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+CREATE_RESPONSE=""
+
+PROBE_CANCELLED=0
+
+# The probe transfer reserves capacity, so it must be cancelled on every exit
+# path after creation. This runs only once, is guarded on both values, and
+# re-exits with the status the script already had: a failed cancel must not
+# turn a failed verification into a success (or vice versa).
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if [ "$PROBE_CANCELLED" -eq 0 ] && [ -n "$TRANSFER_ID" ] && [ -n "$SENDER_SECRET" ]; then
+    echo "==> Cancelling the probe transfer $TRANSFER_ID"
+    cancel_probe || true
+  fi
+  exit "$status"
+}
+
+# DELETE answers 204 for both a real cancel and an unknown id, so a 204 here
+# proves the request was accepted; anything else is a transport/API failure.
+cancel_probe() {
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+    "$API/api/v1/transfers/$TRANSFER_ID" \
+    -H "X-Lynk-Sender-Secret: $SENDER_SECRET" || true)
+  PROBE_CANCELLED=1
+  if [ "$code" = "204" ]; then
+    echo "    probe transfer cancelled"
+    return 0
+  fi
+  echo "!! Could not cancel the probe transfer (HTTP ${code:-no response})."
+  echo "!! It holds capacity until its upload URLs expire; cancel it by hand."
+  return 1
+}
+
+trap cleanup EXIT
+
+if [ -z "$TRANSFER_ID" ] || [ -z "$ACCESS_TOKEN" ] || [ -z "$SENDER_SECRET" ]; then
+  echo "!! The API did not return the tokens needed to verify the rotation."
+  echo "!! The secret IS rotated, but verification could not proceed;"
+  if [ -z "$TRANSFER_ID" ]; then
+    echo "!! the probe transfer could not be identified, so it may hold capacity"
+    echo "!! until it expires. Check the API logs and coturn config by hand."
+  elif [ -z "$SENDER_SECRET" ]; then
+    echo "!! the probe transfer $TRANSFER_ID cannot be cancelled without its"
+    echo "!! sender secret. Cancel it by hand or wait for it to expire."
+  else
+    echo "!! the probe transfer $TRANSFER_ID will still be cancelled on exit."
+    echo "!! Check the API logs and coturn config by hand."
+  fi
   exit 1
 fi
 
 echo "==> Fetching TURN credentials for $TRANSFER_ID"
-CREDS=$(curl -s "$API/api/v1/transfers/$TRANSFER_ID/turn-credentials")
+CREDS=$(curl -s "$API/api/v1/transfers/$TRANSFER_ID/turn-credentials" \
+  -H "X-Lynk-Access-Token: $ACCESS_TOKEN")
 USERNAME=$(printf '%s' "$CREDS" | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 CREDENTIAL=$(printf '%s' "$CREDS" | sed -n 's/.*"credential"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 
 if [ -z "$USERNAME" ] || [ -z "$CREDENTIAL" ]; then
-  echo "!! No credentials returned:"
+  echo "!! No credentials returned (the access token may have been rejected):"
   printf '%s\n' "$CREDS" | head -c 300
   echo
   exit 1
@@ -87,6 +143,11 @@ else
   echo "!! The API did not mint with the new secret - the container probably kept its old environment."
   echo "   expected $EXPECTED"
   echo "   got      $CREDENTIAL"
+  exit 1
+fi
+
+echo "==> Cancelling the probe transfer $TRANSFER_ID"
+if ! cancel_probe; then
   exit 1
 fi
 
