@@ -4,6 +4,10 @@ services:
     # that runs (#66). Refresh the digest deliberately when upgrading.
     image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     restart: always
+    # Run as the image's unprivileged user. The entrypoint otherwise starts as
+    # root and tries to switch to `redis`; cap_drop: ALL removes the
+    # SETUID/SETGID capabilities that switch needs, so the container exits 1.
+    user: redis
     # A password is mandatory: compose refuses to start when it is unset,
     # instead of silently exposing an unauthenticated Redis on the bridge.
     #
