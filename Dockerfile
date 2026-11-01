@@ -8,7 +8,9 @@
 # The builder stage installs the runtime dependencies into a virtualenv; the
 # runtime stage copies only that virtualenv and the application package.
 
-FROM python:3.13-slim AS builder
+# Base image pinned by manifest-list digest (#66) so a repointed tag cannot
+# change what ships. Both stages use the same digest; refresh it deliberately.
+FROM python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
@@ -22,7 +24,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 
-FROM python:3.13-slim AS runtime
+FROM python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

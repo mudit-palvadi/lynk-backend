@@ -81,7 +81,12 @@ Create a `.env` file in the root of the `backend` folder (copy `.env.example`):
 ENVIRONMENT=development
 PORT=8000
 HOST=0.0.0.0
-REDIS_URL=redis://localhost:6379/0
+
+# Required by docker compose: it is interpolated into the Redis command and
+# into the web service's REDIS_URL. Use the same value here and in REDIS_URL
+# (URL-encode reserved characters such as @, :, / and #).
+REDIS_PASSWORD=replace-with-a-long-random-password
+REDIS_URL=redis://:replace-with-a-long-random-password@localhost:6379/0
 
 # Required for real uploads: your own Cloudflare R2 bucket and API token.
 # The built-in mock-* defaults cannot store files.
@@ -91,6 +96,22 @@ R2_SECRET_ACCESS_KEY=your-secret-access-key
 R2_BUCKET_NAME=your-bucket-name
 ```
 
+Set `REDIS_PASSWORD` in your shell and in `.env` to a long random value, then
+start Redis with the same password and with persistence turned off, so it
+behaves like the Compose service:
+
+```bash
+redis-server --requirepass "$REDIS_PASSWORD" --save "" --appendonly no
+```
+
+`docker compose` reads the same `.env` for interpolation; it refuses to start
+when `REDIS_PASSWORD` is missing or empty.
+
+`ENVIRONMENT=production` (matched case-insensitively) hides `/docs`, `/redoc`
+and `/openapi.json`, refuses to start while an R2 credential still has its
+`mock-*` default, and drops `localhost`/`127.0.0.1` entries from
+`ALLOWED_ORIGINS`. Development keeps all three.
+
 ---
 
 ## Running & Testing
@@ -99,7 +120,8 @@ R2_BUCKET_NAME=your-bucket-name
   ```bash
   uvicorn app.main:app --reload
   ```
-  Explore the interactive API docs at **`http://localhost:8000/docs`**.
+  Explore the interactive API docs at **`http://localhost:8000/docs`**
+  (development only; production serves no docs).
 
 * **Run the test suite**:
   ```bash
@@ -144,10 +166,20 @@ The `Dockerfile` is a two-stage build and the image is deliberately narrow:
 * **Secrets come from the environment, not from a baked file.** `docker-compose.yml`
   passes `env_file: .env` at run time; `config.py` reads the environment
   first, and its `.env` path does not exist inside the container.
+* **Both services drop every Linux capability** (`cap_drop: [ALL]`) and set
+  `no-new-privileges:true`, so neither can gain privileges at run time.
+* **Redis is password protected and does not persist.** Compose interpolates a
+  mandatory `REDIS_PASSWORD` into `--requirepass` and into the web service's
+  `REDIS_URL`; `--save "" --appendonly no` keeps session records, metadata and
+  wrapped keys in memory only, so there is no `redis_data` volume to leak.
+* **Every image is pinned by digest.** The `redis` service and both
+  `python:3.13-slim` stages use a `@sha256:` manifest-list digest, so a
+  repointed tag cannot change what runs.
 
-`tests/test_docker_hardening.py` asserts all of the above, so a change that
-reintroduces a root user, a `COPY . .`, a baked `.env`, or `pytest` in the
-runtime requirements fails the suite.
+`tests/test_docker_hardening.py` and `tests/test_compose_hardening.py` assert
+all of the above, so a change that reintroduces a root user, a `COPY . .`, a
+baked `.env`, an unpinned image, a capability, or `pytest` in the runtime
+requirements fails the suite.
 
 ---
 
@@ -157,6 +189,7 @@ When deploying to environments like **Oracle Cloud (OCI)**:
 1. **Network Configuration**: The API is the only thing Cloudflare talks to, so the OCI Ingress Security Rules must allow the Cloudflare IP ranges (and nothing else) to reach the published container port. Do **not** open the API port to `0.0.0.0/0`. See [DOCKER-USER hardening](#docker-user-hardening-oci) for the host-level second layer.
 2. **Process Management**: Run the app as a background service using **systemd** (`systemctl`) or containerize it via **Docker** to ensure persistent operation and crash recovery.
 3. **TLS**: Cloudflare terminates TLS (orange-cloud proxy) and connects straight to the origin's published port over plain HTTP — there is no reverse proxy on the VM. Use Caddy or nginx with Let's Encrypt only if the Cloudflare proxy is not in front of the origin.
+4. **Environment file**: the VM's `.env` must set `ENVIRONMENT=production`, a long random `REDIS_PASSWORD`, and the R2/TURN secrets. `docker compose` refuses to start without `REDIS_PASSWORD`; it is used both to start Redis with `--requirepass` and to build the web service's `REDIS_URL`. Rotating it means updating the file and recreating both services, and Redis starts empty because persistence is disabled.
 
 ### DOCKER-USER hardening (OCI)
 

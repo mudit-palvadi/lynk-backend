@@ -305,7 +305,9 @@ class TransferService:
         try:
             actual_size = await self.r2.verify_file_exists(transfer_id, file_id)
         except FileNotFoundError:
-            target_file.status = "failed"
+            # Nothing is persisted here: the status is only ever written
+            # through mutate_json below, so a "failed" assignment on this copy
+            # is dropped when the exception unwinds.
             raise InvalidInputException("File has not been uploaded to storage")
 
         if actual_size != target_file.file_size:

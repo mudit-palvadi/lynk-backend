@@ -28,13 +28,32 @@ static-auth-secret=${SECRET}
 realm=lynkshare.app
 min-port=${RELAY_MIN}
 max-port=${RELAY_MAX}
-# Security hardening (POTENTIAL_ISSUES #18)
+# Security hardening (POTENTIAL_ISSUES #18, #68)
 no-multicast-peers
 no-cli
+# Coturn's denied-peer-ip takes an address or a start-end range; CIDR is
+# rejected ("CIDR is not supported"), so every range is spelled out.
+denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
 denied-peer-ip=172.16.0.0-172.31.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
-denied-peer-ip=169.254.0.0-169.254.255.255
+# IPv6 loopback (::1/128), unique-local (fc00::/7), link-local (fe80::/10).
+denied-peer-ip=::1-::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+# Quotas (POTENTIAL_ISSUES #68): one WebRTC session can open an allocation
+# per stream, so 12 per user leaves room for several concurrent transfers
+# while stopping one leaked credential from exhausting the relay. 1200 total
+# allocations is comfortable for this VM's small footprint. 8 MiB/s
+# (~67 Mbit/s) per session keeps large file transfers usable without letting
+# a single relayed session saturate the link (coturn meters each direction
+# separately).
+user-quota=12
+total-quota=1200
+max-bps=8388608
 EOF
 
 echo "==> Enabling service"
