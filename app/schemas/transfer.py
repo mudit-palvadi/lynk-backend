@@ -1,14 +1,36 @@
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
+
+
+# A bare RFC 6838 media type: `type/subtype`, no parameters, no whitespace,
+# and nothing that could carry a header injection. The value is echoed back in
+# metadata and signed into the R2 upload URL, so it has to be exactly this.
+_CONTENT_TYPE_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}"
+)
 
 
 class FileCreate(BaseModel):
     file_name: str
     file_size: int = Field(gt=0)
-    content_type: str
+    content_type: str = Field(min_length=3, max_length=255)
+
+    @field_validator("content_type")
+    @classmethod
+    def _validate_content_type(cls, value: str) -> str:
+        if _CONTENT_TYPE_PATTERN.fullmatch(value) is None:
+            raise ValueError(
+                "content_type must be a bare MIME type such as 'image/jpeg'"
+            )
+        return value
 
 
 class TransferCreate(BaseModel):
-    files: list[FileCreate]
+    # An empty transfer would sit in `uploading` and hold an open slot until
+    # the create reservation lapses, so it is refused before it is stored.
+    # The file-count ceiling stays in the service so it can answer 413.
+    files: list[FileCreate] = Field(min_length=1)
 
 
 class FileUploadResponse(BaseModel):

@@ -560,3 +560,125 @@ def test_legacy_record_without_secrets_fails_closed():
     )
     assert metadata.status_code == 404
     assert cancel.status_code == 204
+
+
+def test_create_transfer_rejects_empty_file_list():
+    mock_redis.set_transfer = AsyncMock()
+
+    response = client.post("/api/v1/transfers", json={"files": []})
+
+    assert response.status_code == 422
+    mock_redis.set_transfer.assert_not_called()
+    mock_redis.zadd.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "",
+        "not-a-mime",
+        "text/plain; charset=utf-8",
+        "text/plain\n",
+        "text/plain\r\nX-Injected: 1",
+        "text/plain\x00",
+        "text /plain",
+        "text/ plain",
+        "text/",
+        "/plain",
+        "text/" + "a" * 300,
+        "a" * 200 + "/" + "b" * 100,
+    ],
+)
+def test_create_transfer_rejects_invalid_content_type(content_type):
+    mock_redis.set_transfer = AsyncMock()
+
+    response = client.post(
+        "/api/v1/transfers",
+        json={
+            "files": [
+                {
+                    "file_name": "a.bin",
+                    "file_size": 100,
+                    "content_type": content_type,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    mock_redis.set_transfer.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "content_type",
+    [
+        "text/plain",
+        "image/jpeg",
+        "video/mp4",
+        "application/zip",
+        "application/octet-stream",
+        "image/svg+xml",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/x-custom.v1+json",
+    ],
+)
+def test_create_transfer_accepts_valid_content_type(content_type):
+    mock_redis.set_transfer = AsyncMock()
+    mock_r2.generate_upload_url = AsyncMock(return_value="https://r2.mock/upload")
+
+    response = client.post(
+        "/api/v1/transfers",
+        json={
+            "files": [
+                {
+                    "file_name": "a.bin",
+                    "file_size": 100,
+                    "content_type": content_type,
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 201
+    stored = mock_redis.set_transfer.call_args.args[1]
+    assert stored["files"][0]["content_type"] == content_type
+
+
+def test_complete_file_missing_upload_persists_nothing():
+    transfer_data = {
+        "transfer_id": "tx_123",
+        "sender_secret": "sender-secret",
+        "access_token": "access-token",
+        "status": "uploading",
+        "created_at": "2026-07-15T00:00:00Z",
+        "expires_at": "2026-07-15T00:30:00Z",
+        "total_files": 1,
+        "total_size": 100,
+        "files": [
+            {
+                "file_id": "fid_1",
+                "file_name": "a.txt",
+                "file_size": 100,
+                "content_type": "text/plain",
+                "status": "pending",
+            }
+        ],
+    }
+    mock_redis.get_transfer = AsyncMock(return_value=transfer_data)
+    mock_redis.mutate_json = AsyncMock()
+    mock_redis.set_transfer = AsyncMock()
+    mock_r2.verify_file_exists = AsyncMock(side_effect=FileNotFoundError)
+    mock_r2.delete_objects = AsyncMock()
+
+    response = client.post(
+        "/api/v1/transfers/tx_123/files/fid_1/complete",
+        headers={"X-Lynk-Sender-Secret": "sender-secret"},
+    )
+
+    assert response.status_code == 400
+    assert "has not been uploaded" in response.json()["detail"]
+    # A missing upload must not be recorded as `failed`: the only record writer
+    # is mutate_json, and it is not reached on this path.
+    mock_redis.mutate_json.assert_not_called()
+    mock_redis.set_transfer.assert_not_called()
+    assert transfer_data["files"][0]["status"] == "pending"
