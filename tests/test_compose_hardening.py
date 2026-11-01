@@ -59,6 +59,19 @@ def test_redis_requires_a_password(compose_text: str) -> None:
     assert "${REDIS_PASSWORD:?" in block
 
 
+def test_redis_runs_as_the_unprivileged_image_user(compose_text: str) -> None:
+    """cap_drop: ALL removes SETUID/SETGID, so the entrypoint cannot drop root.
+
+    The official image starts as root and switches to the `redis` user. With
+    every capability dropped that switch fails and the container exits 1, so
+    the service must start as `redis` directly.
+    """
+    block = service_block(compose_text, "redis")
+    assert re.search(r"^\s*user:\s*redis\s*$", block, re.MULTILINE), (
+        "redis must run as its unprivileged user when all capabilities are dropped"
+    )
+
+
 def test_redis_does_not_persist_snapshots(compose_text: str) -> None:
     """An RDB/AOF file would keep expired secrets and wrapped keys on disk."""
     block = service_block(compose_text, "redis")
